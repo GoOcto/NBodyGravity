@@ -27,7 +27,7 @@ This project simulates gravitational interactions between particles using Newton
 
 ## Modern Alternative
 
-For a working, cross-platform version of this simulation, see the **WebGPU implementation** in the `webgpu-nbody/` directory. It provides the same gravitational physics with modern web technology and improved camera controls.
+For a working, cross-platform version of this simulation, see the **[WebGPU implementation](https://github.com/GoOcto/NBodyGravity/tree/main/webgpu-nbody)** in the `webgpu-nbody/` directory. It provides the same gravitational physics with modern web technology and improved camera controls.
 
 ## Building (Historical)
 
