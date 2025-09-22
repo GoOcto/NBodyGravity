@@ -1,0 +1,38 @@
+{
+    "name": "webgpu-nbody-simulation",
+    "version": "1.0.0",
+    "description": "WebGPU N-Body Gravity Simulation - Modern compute shader implementation",
+    "main": "main.js",
+    "scripts": {
+        "dev": "python -m http.server 8080 || python3 -m http.server 8080",
+        "dev-node": "npx http-server -p 8080 -c-1",
+        "build": "echo 'No build step required - pure WebGPU implementation'",
+        "start": "npm run dev"
+    },
+    "keywords": [
+        "webgpu",
+        "n-body",
+        "gravity",
+        "simulation",
+        "compute-shader",
+        "wgsl",
+        "physics",
+        "particles"
+    ],
+    "author": "GoOcto",
+    "license": "MIT",
+    "devDependencies": {
+        "http-server": "^14.1.1"
+    },
+    "engines": {
+        "node": ">=16.0.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/GoOcto/NBodyGravity.git"
+    },
+    "homepage": "https://github.com/GoOcto/NBodyGravity#readme",
+    "bugs": {
+        "url": "https://github.com/GoOcto/NBodyGravity/issues"
+    }
+}

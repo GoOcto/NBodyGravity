@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU N-Body Gravity Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            min-width: 250px;
+            z-index: 100;
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+        }
+
+        .control-group input[type="number"] {
+            width: 80px;
+            padding: 3px;
+            background: #333;
+            color: white;
+            border: 1px solid #666;
+            border-radius: 3px;
+        }
+
+        .stats {
+            font-size: 11px;
+            color: #ccc;
+            margin-top: 10px;
+        }
+
+        .error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff6b6b;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            max-width: 500px;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loading" class="loading">
+        Initializing WebGPU N-Body Simulation...
+    </div>
+
+    <div id="error" class="error" style="display: none;">
+        <h3>WebGPU Not Available</h3>
+        <p>This demo requires WebGPU support. Please use:</p>
+        <ul style="text-align: left;">
+            <li>Chrome/Edge with WebGPU enabled</li>
+            <li>Firefox Nightly with WebGPU enabled</li>
+            <li>Safari Technology Preview</li>
+        </ul>
+        <p>You may need to enable WebGPU in browser flags.</p>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <div id="controls" class="controls" style="display: none;">
+        <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation</h3>
+
+        <div class="control-group">
+            <label>Particle Count: <span id="particleCountValue">1000</span></label>
+            <input type="range" id="particleCount" min="100" max="4000" step="100" value="1000">
+        </div>
+
+        <div class="control-group">
+            <label>Gravity Strength: <span id="gravityValue">1.0</span></label>
+            <input type="range" id="gravity" min="0.1" max="5.0" step="0.1" value="1.0">
+        </div>
+
+        <div class="control-group">
+            <label>Time Scale: <span id="timeScaleValue">1.0</span></label>
+            <input type="range" id="timeScale" min="0.1" max="3.0" step="0.1" value="1.0">
+        </div>
+
+        <div class="control-group">
+            <label>Damping: <span id="dampingValue">0.999</span></label>
+            <input type="range" id="damping" min="0.990" max="1.000" step="0.001" value="0.999">
+        </div>
+
+        <div class="control-group">
+            <button id="resetBtn"
+                style="width: 100%; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                Reset Simulation
+            </button>
+        </div>
+
+        <div class="stats">
+            <div>FPS: <span id="fps">--</span></div>
+            <div>Compute Time: <span id="computeTime">--</span>ms</div>
+            <div>Render Time: <span id="renderTime">--</span>ms</div>
+        </div>
+    </div>
+
+    <script type="module" src="main-stable.js"></script>
+</body>
+
+</html>
