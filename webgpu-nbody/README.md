@@ -2,6 +2,8 @@
 
 A modern, high-performance N-body gravity simulation using WebGPU compute shaders. This is a complete rewrite of the original DirectX 10 implementation using cutting-edge web technologies.
 
+**🎮 [Try the Live Demo](https://demo.goocto.com/webgpu-nbody/)**
+
 ![N-Body Simulation](https://img.shields.io/badge/WebGPU-Enabled-brightgreen)
 ![Compute Shaders](https://img.shields.io/badge/WGSL-Compute%20Shaders-blue)
 
