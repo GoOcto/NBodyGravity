@@ -2,6 +2,10 @@
 
 A real-time gravitational N-body simulation built in November 2010 using DirectX 10 and the DXUT framework.
 
+## Modern Alternative
+
+For a working, cross-platform version of this simulation, see the **[WebGPU implementation](https://github.com/GoOcto/NBodyGravity/tree/main/webgpu-nbody)** in the `webgpu-nbody/` directory. It provides the same gravitational physics with modern web technology and improved camera controls.
+
 ## Overview
 
 This project simulates gravitational interactions between particles using Newton's law of universal gravitation. Each particle attracts every other particle, creating complex orbital dynamics and emergent behaviors like galaxy formation and gravitational slingshots.
@@ -24,10 +28,6 @@ This project simulates gravitational interactions between particles using Newton
 ## Compatibility Warning
 
 ⚠️ **This is legacy DirectX 10 code from 2010.** Installing and running this on modern Windows (Win10/Win11) may not work due to deprecated DirectX SDK dependencies and compatibility issues.
-
-## Modern Alternative
-
-For a working, cross-platform version of this simulation, see the **[WebGPU implementation](https://github.com/GoOcto/NBodyGravity/tree/main/webgpu-nbody)** in the `webgpu-nbody/` directory. It provides the same gravitational physics with modern web technology and improved camera controls.
 
 ## Building (Historical)
 
