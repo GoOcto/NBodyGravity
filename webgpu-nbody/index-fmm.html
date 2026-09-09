@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebGPU N-Body Gravity Simulation 2D</title>
+    <title>WebGPU N-Body Gravity Simulation 3D</title>
 	<link rel="stylesheet" href="styles.css">
 </head>
 
@@ -28,21 +28,31 @@
     <canvas id="canvas"></canvas>
 
     <div id="controls" class="controls" style="display: none;">
-        <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation 2D</h3>
+        <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation 3D</h3>
 
         <div class="control-group">
             <label for="demoSelect">Demo:</label>
             <select id="demoSelect" style="width: 100%; padding: 6px;">
-                <option value="index.html" selected>Direct O(N²) — Basic</option>
-                <option value="index-fmm.html">FMM Octree — CPU/GPU</option>
+                <option value="index.html">Direct O(N²) — Basic</option>
+                <option value="index-fmm.html" selected>FMM Octree — CPU/GPU</option>
                 <option value="index-optimized.html">Grid-Based 2D — CPU</option>
                 <option value="index-optimized-gpu.html">Grid-Based 2D — GPU Compute</option>
             </select>
         </div>
 
         <div class="control-group">
+            <label for="simulationMode">Physics backend</label>
+            <select id="simulationMode"
+                style="width: 100%; padding: 5px; background: #333; color: white; border: 1px solid #666; border-radius: 3px;">
+                <option value="cpu">CPU direct (O(N²))</option>
+                <option value="gpu">GPU FMM octree</option>
+            </select>
+            <div id="modeStatus" class="mode-status">CPU direct (O(N²))</div>
+        </div>
+
+        <div class="control-group">
             <label>Particle Count: <span id="particleCountValue">1000</span></label>
-            <input type="range" id="particleCount" min="100" max="4000" step="100" value="1000">
+            <input type="range" id="particleCount" min="100" max="40000" step="100" value="1000">
         </div>
 
         <div class="control-group">
@@ -69,19 +79,19 @@
 
         <div class="stats">
             <div>FPS: <span id="fps">--</span></div>
-            <div>Compute Time: <span id="computeTime">--</span>ms</div>
-            <div>Render Time: <span id="renderTime">--</span>ms</div>
+            <div>Compute Encode (CPU): <span id="computeTime">--</span>ms</div>
+            <div>Render Encode/Submit (CPU): <span id="renderTime">--</span>ms</div>
+            <div>GPU timings are not measured; readback occurs only on mode switch or resize.</div>
         </div>
     </div>
 
-    <script type="module" src="main.js"></script>
+    <script type="module" src="main-fmm.js"></script>
 
     <script>
         document.getElementById('demoSelect').addEventListener('change', (e) => {
             window.location.href = e.target.value;
         });
     </script>
-
 </body>
 
 </html>

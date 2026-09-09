@@ -1,37 +1,30 @@
-// WebGPU N-Body Gravity Simulation
-// Modern compute shader implementation
+// Simplified N-Body simulation without compute shaders
+// Uses JavaScript for physics to avoid GPU driver crashes
 
 import { CameraController } from './camera.js';
 import { mat4, vec3 } from './gl-matrix.js';
 
-class NBodySimulation {
+class SimpleNBodySimulation {
     constructor(canvas) {
         this.canvas = canvas;
         this.device = null;
         this.context = null;
 
         // Simulation parameters
-        this.particleCount = 1000;
+        this.particleCount = 500; // Reduced for CPU simulation
         this.gravityStrength = 1.0;
         this.timeScale = 1.0;
         this.damping = 0.999;
 
-        // WebGPU resources
-        this.particleBuffer = null;
-        this.forceBuffer = null;
-        this.uniformBuffer = null;
-        this.paramBuffer = null;
+        // Particle data (CPU-based)
+        this.particles = [];
 
-        // Compute pipelines
-        this.forceComputePipeline = null;
-        this.integrateComputePipeline = null;
+        // WebGPU resources (render only)
+        this.particleBuffer = null;
+        this.uniformBuffer = null;
 
         // Render pipeline
         this.renderPipeline = null;
-
-        // Bind groups
-        this.forceBindGroup = null;
-        this.integrateBindGroup = null;
         this.renderBindGroup = null;
 
         // Camera
@@ -45,7 +38,6 @@ class NBodySimulation {
             far: 1000
         };
 
-        // Camera controller
         this.cameraController = null;
 
         // Performance tracking
@@ -57,7 +49,7 @@ class NBodySimulation {
     }
 
     async init() {
-        // Initialize WebGPU
+        // Initialize WebGPU (render only)
         if (!navigator.gpu) {
             throw new Error('WebGPU is not supported');
         }
@@ -77,17 +69,66 @@ class NBodySimulation {
             format: canvasFormat,
         });
 
-        // Update camera aspect ratio
         this.camera.aspect = this.canvas.width / this.canvas.height;
 
+        this.initializeParticles();
         await this.initResources();
-        await this.initComputePipelines();
         await this.initRenderPipeline();
 
-        this.initializeParticles();
-
-        // Initialize camera controller
         this.cameraController = new CameraController(this.camera, this.canvas);
+    }
+
+    initializeParticles() {
+        this.particles = [];
+
+        for (let i = 0; i < this.particleCount; i++) {
+            // Position (random distribution in a sphere)
+            const radius = Math.random() * 20 + 5;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+
+            const particle = {
+                position: [
+                    radius * Math.sin(phi) * Math.cos(theta),
+                    radius * Math.sin(phi) * Math.sin(theta),
+                    radius * Math.cos(phi)
+                ],
+                mass: Math.random() * 0.5 + 0.5,
+                velocity: [0, 0, 0]
+            };
+
+            // Initial orbital velocity
+            const speed = Math.sqrt(this.gravityStrength * 100 / radius) * 0.3;
+            particle.velocity[0] = -speed * Math.sin(theta);
+            particle.velocity[1] = speed * Math.cos(theta);
+            particle.velocity[2] = 0;
+
+            this.particles.push(particle);
+        }
+
+        // Add one particle at center for reference
+        if (this.particles.length > 0) {
+            this.particles[0].position = [0, 0, 0];
+            this.particles[0].velocity = [0, 0, 0];
+            this.particles[0].mass = 2.0;
+        }
+    }
+
+    async initResources() {
+        // Create particle buffer for rendering only
+        const particleBufferSize = this.particleCount * 8 * 4;
+        this.particleBuffer = this.device.createBuffer({
+            size: particleBufferSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+
+        // Create uniform buffer for camera matrices
+        this.uniformBuffer = this.device.createBuffer({
+            size: 144, // viewProj (64) + view (64) + cameraPos (12) + time (4)
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+
+        this.updateParticleBuffer();
     }
 
     async loadShader(url) {
@@ -95,78 +136,7 @@ class NBodySimulation {
         return await response.text();
     }
 
-    async initResources() {
-        // Create particle buffer (position, mass, velocity)
-        const particleBufferSize = this.particleCount * 8 * 4; // 8 floats per particle, 4 bytes per float
-        this.particleBuffer = this.device.createBuffer({
-            size: particleBufferSize,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        });
-
-        // Create force buffer
-        const forceBufferSize = this.particleCount * 3 * 4; // 3 floats per force vector
-        this.forceBuffer = this.device.createBuffer({
-            size: forceBufferSize,
-            usage: GPUBufferUsage.STORAGE,
-        });
-
-        // Create uniform buffer for camera matrices
-        this.uniformBuffer = this.device.createBuffer({
-            size: 80, // mat4 (64 bytes) + vec3 (12 bytes) + float (4 bytes)
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-
-        // Create parameter buffer for simulation parameters
-        this.paramBuffer = this.device.createBuffer({
-            size: 16, // 4 floats
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-    }
-
-    async initComputePipelines() {
-        // Load compute shaders
-        const forceShader = await this.loadShader('./shaders/force-compute.wgsl');
-        const integrateShader = await this.loadShader('./shaders/integrate-compute.wgsl');
-
-        // Create compute pipelines
-        this.forceComputePipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: {
-                module: this.device.createShaderModule({ code: forceShader }),
-                entryPoint: 'computeForces',
-            },
-        });
-
-        this.integrateComputePipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: {
-                module: this.device.createShaderModule({ code: integrateShader }),
-                entryPoint: 'integrateParticles',
-            },
-        });
-
-        // Create bind groups for compute shaders
-        this.forceBindGroup = this.device.createBindGroup({
-            layout: this.forceComputePipeline.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: this.particleBuffer } },
-                { binding: 1, resource: { buffer: this.forceBuffer } },
-                { binding: 2, resource: { buffer: this.paramBuffer } },
-            ],
-        });
-
-        this.integrateBindGroup = this.device.createBindGroup({
-            layout: this.integrateComputePipeline.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: this.particleBuffer } },
-                { binding: 1, resource: { buffer: this.forceBuffer } },
-                { binding: 2, resource: { buffer: this.paramBuffer } },
-            ],
-        });
-    }
-
     async initRenderPipeline() {
-        // Use quad-based rendering instead of points
         const vertexShader = await this.loadShader('./shaders/particle-vertex-quad.wgsl');
         const fragmentShader = await this.loadShader('./shaders/particle-fragment-quad.wgsl');
 
@@ -194,7 +164,7 @@ class NBodySimulation {
                 }],
             },
             primitive: {
-                topology: 'triangle-list', // Changed from point-list to triangle-list
+                topology: 'triangle-list',
             },
         });
 
@@ -207,47 +177,95 @@ class NBodySimulation {
         });
     }
 
-    initializeParticles() {
-        const particles = new Float32Array(this.particleCount * 8);
+    updatePhysics(deltaTime) {
+        const dt = deltaTime * this.timeScale;
+
+        // Calculate forces (CPU-based)
+        const forces = [];
+        for (let i = 0; i < this.particleCount; i++) {
+            forces[i] = [0, 0, 0];
+
+            const particle = this.particles[i];
+
+            for (let j = 0; j < this.particleCount; j++) {
+                if (i === j) continue;
+
+                const other = this.particles[j];
+                const dx = other.position[0] - particle.position[0];
+                const dy = other.position[1] - particle.position[1];
+                const dz = other.position[2] - particle.position[2];
+
+                const distanceSquared = dx * dx + dy * dy + dz * dz + 0.01; // epsilon
+                const distance = Math.sqrt(distanceSquared);
+
+                const force = this.gravityStrength * particle.mass * other.mass / distanceSquared;
+
+                forces[i][0] += force * dx / distance;
+                forces[i][1] += force * dy / distance;
+                forces[i][2] += force * dz / distance;
+            }
+        }
+
+        // Integrate particles
+        for (let i = 0; i < this.particleCount; i++) {
+            const particle = this.particles[i];
+            const force = forces[i];
+
+            // Update velocity
+            particle.velocity[0] += (force[0] / particle.mass) * dt;
+            particle.velocity[1] += (force[1] / particle.mass) * dt;
+            particle.velocity[2] += (force[2] / particle.mass) * dt;
+
+            // Apply damping
+            particle.velocity[0] *= this.damping;
+            particle.velocity[1] *= this.damping;
+            particle.velocity[2] *= this.damping;
+
+            // Update position
+            particle.position[0] += particle.velocity[0] * dt;
+            particle.position[1] += particle.velocity[1] * dt;
+            particle.position[2] += particle.velocity[2] * dt;
+
+            // Boundary conditions
+            const boundarySize = 50.0;
+            const restitution = 0.8;
+
+            if (Math.abs(particle.position[0]) > boundarySize) {
+                particle.position[0] = Math.sign(particle.position[0]) * boundarySize;
+                particle.velocity[0] *= -restitution;
+            }
+            if (Math.abs(particle.position[1]) > boundarySize) {
+                particle.position[1] = Math.sign(particle.position[1]) * boundarySize;
+                particle.velocity[1] *= -restitution;
+            }
+            if (Math.abs(particle.position[2]) > boundarySize) {
+                particle.position[2] = Math.sign(particle.position[2]) * boundarySize;
+                particle.velocity[2] *= -restitution;
+            }
+        }
+    }
+
+    updateParticleBuffer() {
+        const particleData = new Float32Array(this.particleCount * 8);
 
         for (let i = 0; i < this.particleCount; i++) {
             const offset = i * 8;
+            const particle = this.particles[i];
 
-            // Position (tighter distribution for better visibility)
-            const radius = Math.random() * 20 + 5;  // Reduced range
-            const theta = Math.random() * Math.PI * 2;
-            const phi = Math.acos(2 * Math.random() - 1);
-
-            particles[offset + 0] = radius * Math.sin(phi) * Math.cos(theta); // x
-            particles[offset + 1] = radius * Math.sin(phi) * Math.sin(theta); // y
-            particles[offset + 2] = radius * Math.cos(phi);                   // z
-            particles[offset + 3] = Math.random() * 0.5 + 0.5; // mass
-
-            // Velocity (initial orbital velocity)
-            const speed = Math.sqrt(this.gravityStrength * 100 / radius) * 0.3;
-            particles[offset + 4] = -speed * Math.sin(theta); // vx
-            particles[offset + 5] = speed * Math.cos(theta);  // vy
-            particles[offset + 6] = 0; // vz
-            particles[offset + 7] = 0; // padding
+            particleData[offset + 0] = particle.position[0];
+            particleData[offset + 1] = particle.position[1];
+            particleData[offset + 2] = particle.position[2];
+            particleData[offset + 3] = particle.mass;
+            particleData[offset + 4] = particle.velocity[0];
+            particleData[offset + 5] = particle.velocity[1];
+            particleData[offset + 6] = particle.velocity[2];
+            particleData[offset + 7] = 0; // padding
         }
 
-        // Add a few test particles at known positions for debugging
-        if (this.particleCount > 0) {
-            particles[0] = 0;   // x: center
-            particles[1] = 0;   // y: center  
-            particles[2] = 0;   // z: center
-            particles[3] = 1.0; // mass
-            particles[4] = 0;   // vx
-            particles[5] = 0;   // vy
-            particles[6] = 0;   // vz
-            particles[7] = 0;   // padding
-        }
-
-        this.device.queue.writeBuffer(this.particleBuffer, 0, particles);
+        this.device.queue.writeBuffer(this.particleBuffer, 0, particleData);
     }
 
     updateUniforms(time) {
-        // Update camera matrices
         const viewMatrix = mat4.create();
         const projMatrix = mat4.create();
         const viewProjMatrix = mat4.create();
@@ -256,49 +274,31 @@ class NBodySimulation {
         mat4.perspective(projMatrix, this.camera.fovy, this.camera.aspect, this.camera.near, this.camera.far);
         mat4.multiply(viewProjMatrix, projMatrix, viewMatrix);
 
-        const uniformData = new Float32Array(20);
-        uniformData.set(viewProjMatrix, 0);
-        uniformData.set(this.camera.position, 16);
-        uniformData[19] = time;
+        const uniformData = new Float32Array(36); // 16 + 16 + 3 + 1 = 36 floats
+        uniformData.set(viewProjMatrix, 0);      // 16 floats (64 bytes)
+        uniformData.set(viewMatrix, 16);         // 16 floats (64 bytes) 
+        uniformData.set(this.camera.position, 32); // 3 floats (12 bytes)
+        uniformData[35] = time;                  // 1 float (4 bytes)
 
         this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
-
-        // Update simulation parameters
-        const paramData = new Float32Array([
-            this.particleCount,
-            0.016 * this.timeScale, // deltaTime (assuming 60 FPS)
-            this.gravityStrength,
-            this.damping
-        ]);
-
-        this.device.queue.writeBuffer(this.paramBuffer, 0, paramData);
     }
 
     render(time) {
-        // Update camera controller
         if (this.cameraController) {
             this.cameraController.update();
         }
 
+        const computeStart = performance.now();
+        this.updatePhysics(0.016); // Fixed timestep
+        this.updateParticleBuffer();
+        const computeEnd = performance.now();
+        this.computeTime = computeEnd - computeStart;
+
         this.updateUniforms(time);
 
+        const renderStart = performance.now();
         const commandEncoder = this.device.createCommandEncoder();
 
-        // Compute pass - calculate forces
-        const computePass1 = commandEncoder.beginComputePass();
-        computePass1.setPipeline(this.forceComputePipeline);
-        computePass1.setBindGroup(0, this.forceBindGroup);
-        computePass1.dispatchWorkgroups(Math.ceil(this.particleCount / 64));
-        computePass1.end();
-
-        // Compute pass - integrate particles
-        const computePass2 = commandEncoder.beginComputePass();
-        computePass2.setPipeline(this.integrateComputePipeline);
-        computePass2.setBindGroup(0, this.integrateBindGroup);
-        computePass2.dispatchWorkgroups(Math.ceil(this.particleCount / 64));
-        computePass2.end();
-
-        // Render pass
         const renderPass = commandEncoder.beginRenderPass({
             colorAttachments: [{
                 view: this.context.getCurrentTexture().createView(),
@@ -310,10 +310,17 @@ class NBodySimulation {
 
         renderPass.setPipeline(this.renderPipeline);
         renderPass.setBindGroup(0, this.renderBindGroup);
-        renderPass.draw(this.particleCount * 6); // 6 vertices per particle quad
+        renderPass.draw(this.particleCount * 6);
         renderPass.end();
 
         this.device.queue.submit([commandEncoder.finish()]);
+        const renderEnd = performance.now();
+        this.renderTime = renderEnd - renderStart;
+
+        // Debug: Log timing occasionally
+        if (this.frameCount % 60 === 0) {
+            console.log(`Compute: ${this.computeTime.toFixed(3)}ms, Render: ${this.renderTime.toFixed(3)}ms, Particles: ${this.particleCount}`);
+        }
 
         // Update performance stats
         this.frameCount++;
@@ -325,35 +332,20 @@ class NBodySimulation {
     }
 
     setParticleCount(count) {
-        this.particleCount = Math.floor(count);
-        // Re-initialize resources with new particle count
+        this.particleCount = Math.floor(Math.min(count, 4000)); // Cap at 4000 for CPU
+        this.initializeParticles();
         this.initResources().then(() => {
-            this.initComputePipelines().then(() => {
-                this.initRenderPipeline().then(() => {
-                    this.initializeParticles();
-                });
-            });
+            this.initRenderPipeline();
         });
     }
 
-    setGravityStrength(strength) {
-        this.gravityStrength = strength;
-    }
-
-    setTimeScale(scale) {
-        this.timeScale = scale;
-    }
-
-    setDamping(damping) {
-        this.damping = damping;
-    }
-
-    resetSimulation() {
-        this.initializeParticles();
-    }
+    setGravityStrength(strength) { this.gravityStrength = strength; }
+    setTimeScale(scale) { this.timeScale = scale; }
+    setDamping(damping) { this.damping = damping; }
+    resetSimulation() { this.initializeParticles(); }
 }
 
-// Main application
+// Use the stable version
 class App {
     constructor() {
         this.simulation = null;
@@ -367,26 +359,21 @@ class App {
         const controls = document.getElementById('controls');
 
         try {
-            // Resize canvas
             this.resizeCanvas(canvas);
             window.addEventListener('resize', () => this.resizeCanvas(canvas));
 
-            // Initialize simulation
-            this.simulation = new NBodySimulation(canvas);
+            // Use stable CPU-based simulation
+            this.simulation = new SimpleNBodySimulation(canvas);
             await this.simulation.init();
 
-            // Hide loading, show controls
             loading.style.display = 'none';
             controls.style.display = 'block';
 
-            // Setup controls
             this.setupControls();
-
-            // Start render loop
             this.animate();
 
         } catch (err) {
-            console.error('Failed to initialize WebGPU:', err);
+            console.error('Failed to initialize:', err);
             loading.style.display = 'none';
             error.style.display = 'block';
         }
@@ -413,6 +400,11 @@ class App {
         const gravityValue = document.getElementById('gravityValue');
         const timeScaleValue = document.getElementById('timeScaleValue');
         const dampingValue = document.getElementById('dampingValue');
+
+        // Limit particle count for CPU simulation
+        particleCountSlider.max = 4000;
+        particleCountSlider.value = 500;
+        particleCountValue.textContent = 500;
 
         particleCountSlider.addEventListener('input', (e) => {
             const value = parseInt(e.target.value);
@@ -449,10 +441,9 @@ class App {
         if (this.simulation) {
             this.simulation.render(time);
 
-            // Update stats
             document.getElementById('fps').textContent = this.simulation.fps;
-            document.getElementById('computeTime').textContent = this.simulation.computeTime.toFixed(2);
-            document.getElementById('renderTime').textContent = this.simulation.renderTime.toFixed(2);
+            document.getElementById('computeTime').textContent = this.simulation.computeTime.toFixed(3);
+            document.getElementById('renderTime').textContent = this.simulation.renderTime.toFixed(3);
         }
 
         this.animationId = requestAnimationFrame(() => this.animate());

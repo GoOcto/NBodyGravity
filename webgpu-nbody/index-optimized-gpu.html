@@ -4,13 +4,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebGPU N-Body Gravity Simulation 2D</title>
+    <title>WebGPU N-Body Gravity Simulation (GPU Compute)</title>
 	<link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
     <div id="loading" class="loading">
-        Initializing WebGPU N-Body Simulation...
+        Initializing WebGPU N-Body Simulation (GPU Compute)...
     </div>
 
     <div id="error" class="error" style="display: none;">
@@ -28,21 +28,21 @@
     <canvas id="canvas"></canvas>
 
     <div id="controls" class="controls" style="display: none;">
-        <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation 2D</h3>
+        <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation (GPU Compute) 2D</h3>
 
         <div class="control-group">
             <label for="demoSelect">Demo:</label>
             <select id="demoSelect" style="width: 100%; padding: 6px;">
-                <option value="index.html" selected>Direct O(N²) — Basic</option>
+                <option value="index.html">Direct O(N²) — Basic</option>
                 <option value="index-fmm.html">FMM Octree — CPU/GPU</option>
                 <option value="index-optimized.html">Grid-Based 2D — CPU</option>
-                <option value="index-optimized-gpu.html">Grid-Based 2D — GPU Compute</option>
+                <option value="index-optimized-gpu.html" selected>Grid-Based 2D — GPU Compute</option>
             </select>
         </div>
 
         <div class="control-group">
-            <label>Particle Count: <span id="particleCountValue">1000</span></label>
-            <input type="range" id="particleCount" min="100" max="4000" step="100" value="1000">
+            <label>Particle Count: <span id="particleCountValue">1000000</span></label>
+            <input type="range" id="particleCount" min="0" max="4000000" step="100000" value="1000000">
         </div>
 
         <div class="control-group">
@@ -51,13 +51,17 @@
         </div>
 
         <div class="control-group">
-            <label>Time Scale: <span id="timeScaleValue">1.0</span></label>
-            <input type="range" id="timeScale" min="0.1" max="3.0" step="0.1" value="1.0">
+            <label>Time Scale: <span id="timeScaleValue">1.00x</span></label>
+            <input type="range" id="timeScale" min="-3" max="3" step="0.1" value="0">
         </div>
 
         <div class="control-group">
-            <label>Damping: <span id="dampingValue">0.999</span></label>
-            <input type="range" id="damping" min="0.990" max="1.000" step="0.001" value="0.999">
+            <label>Boundary Handling:</label>
+            <select id="boundaryMode" style="width: 100%; padding: 6px;">
+                <option value="bounce" selected>Clamping (Bounce)</option>
+                <option value="wrap">Periodic (Wrap)</option>
+                <option value="delete">Deletion (Cull)</option>
+            </select>
         </div>
 
         <div class="control-group">
@@ -69,19 +73,20 @@
 
         <div class="stats">
             <div>FPS: <span id="fps">--</span></div>
-            <div>Compute Time: <span id="computeTime">--</span>ms</div>
-            <div>Render Time: <span id="renderTime">--</span>ms</div>
+            <div>Compute Encode/Submit (CPU): <span id="computeTime">--</span>ms</div>
+            <div>Render Encode/Submit (CPU): <span id="renderTime">--</span>ms</div>
+            <div>Active Particles: <span id="activeParticles">--</span></div>
+            <div>Physics + grid + colorize all run as GPU compute shaders; the CPU only encodes/submits commands.</div>
         </div>
     </div>
 
-    <script type="module" src="main.js"></script>
+    <script type="module" src="main-optimized-gpu.js"></script>
 
     <script>
         document.getElementById('demoSelect').addEventListener('change', (e) => {
             window.location.href = e.target.value;
         });
     </script>
-
 </body>
 
 </html>

@@ -31,7 +31,7 @@ class SimpleNBodySimulation {
 
         // This is the canonical state used by the CPU path and for lossless mode switches.
         this.particleData = new Float32Array(0);
-        this.cpuForces = new Float32Array(0);
+        this.cpuAccel = new Float32Array(0);
 
         this.particleBuffer = null;
         this.forceBuffer = null;
@@ -201,7 +201,7 @@ class SimpleNBodySimulation {
 
     initializeParticles() {
         this.particleData = new Float32Array(this.particleCount * PARTICLE_FLOATS);
-        this.cpuForces = new Float32Array(this.particleCount * 3);
+        this.cpuAccel = new Float32Array(this.particleCount * 3);
 
         for (let i = 0; i < this.particleCount; i++) {
             const offset = i * PARTICLE_FLOATS;
@@ -212,7 +212,7 @@ class SimpleNBodySimulation {
             this.particleData[offset] = radius * Math.sin(phi) * Math.cos(theta);
             this.particleData[offset + 1] = radius * Math.sin(phi) * Math.sin(theta);
             this.particleData[offset + 2] = radius * Math.cos(phi);
-            this.particleData[offset + 3] = Math.random() * 0.5 + 0.5;
+            this.particleData[offset + 3] = 1.0; //Math.random() * 0.5 + 0.5;
 
             const speed = Math.sqrt(this.gravityStrength * 100 / radius) * 0.3;
             this.particleData[offset + 4] = -speed * Math.sin(theta);
@@ -401,7 +401,8 @@ class SimpleNBodySimulation {
 
     updateCpuPhysics(deltaTime) {
         const dt = deltaTime * this.timeScale;
-        this.cpuForces.fill(0);
+        //this.cpuForces.fill(0);
+		this.cpuAccel.fill(0);
 
         for (let i = 0; i < this.particleCount; i++) {
             const iOffset = i * PARTICLE_FLOATS;
@@ -417,11 +418,12 @@ class SimpleNBodySimulation {
                 const dz = this.particleData[jOffset + 2] - iz;
                 const distanceSquared = dx * dx + dy * dy + dz * dz + CPU_DISTANCE_EPSILON;
                 const distance = Math.sqrt(distanceSquared);
-                const force = this.gravityStrength * im * this.particleData[jOffset + 3] / distanceSquared;
+                // const force = this.gravityStrength * im * this.particleData[jOffset + 3] / distanceSquared;
+                const accel = this.gravityStrength * this.particleData[jOffset + 3] / distanceSquared;
                 const forceOffset = i * 3;
-                this.cpuForces[forceOffset] += force * dx / distance;
-                this.cpuForces[forceOffset + 1] += force * dy / distance;
-                this.cpuForces[forceOffset + 2] += force * dz / distance;
+                this.cpuAccel[forceOffset] += accel * dx / distance;
+                this.cpuAccel[forceOffset + 1] += accel * dy / distance;
+                this.cpuAccel[forceOffset + 2] += accel * dz / distance;
             }
         }
 
@@ -429,9 +431,9 @@ class SimpleNBodySimulation {
             const offset = i * PARTICLE_FLOATS;
             const forceOffset = i * 3;
             const mass = Math.max(this.particleData[offset + 3], 0.0001);
-            this.particleData[offset + 4] += (this.cpuForces[forceOffset] / mass) * dt;
-            this.particleData[offset + 5] += (this.cpuForces[forceOffset + 1] / mass) * dt;
-            this.particleData[offset + 6] += (this.cpuForces[forceOffset + 2] / mass) * dt;
+            this.particleData[offset + 4] += this.cpuAccel[forceOffset] * dt;
+            this.particleData[offset + 5] += this.cpuAccel[forceOffset + 1] * dt;
+            this.particleData[offset + 6] += this.cpuAccel[forceOffset + 2] * dt;
             this.particleData[offset + 4] *= this.damping;
             this.particleData[offset + 5] *= this.damping;
             this.particleData[offset + 6] *= this.damping;
