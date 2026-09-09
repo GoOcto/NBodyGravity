@@ -61,6 +61,12 @@
             margin-top: 10px;
         }
 
+        .mode-status {
+            font-size: 11px;
+            color: #9be7a5;
+            margin-top: 8px;
+        }
+
         .error {
             position: absolute;
             top: 50%;
@@ -91,7 +97,8 @@
     </div>
 
     <div id="error" class="error" style="display: none;">
-        <h3>WebGPU Not Available</h3>
+        <h3>WebGPU Initialization Failed</h3>
+        <p id="errorMessage"></p>
         <p>This demo requires WebGPU support. Please use:</p>
         <ul style="text-align: left;">
             <li>Chrome/Edge with WebGPU enabled</li>
@@ -107,8 +114,18 @@
         <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation</h3>
 
         <div class="control-group">
+            <label for="simulationMode">Physics backend</label>
+            <select id="simulationMode"
+                style="width: 100%; padding: 5px; background: #333; color: white; border: 1px solid #666; border-radius: 3px;">
+                <option value="cpu">CPU direct (O(N²))</option>
+                <option value="gpu">GPU FMM octree</option>
+            </select>
+            <div id="modeStatus" class="mode-status">CPU direct (O(N²))</div>
+        </div>
+
+        <div class="control-group">
             <label>Particle Count: <span id="particleCountValue">1000</span></label>
-            <input type="range" id="particleCount" min="100" max="4000" step="100" value="1000">
+            <input type="range" id="particleCount" min="100" max="40000" step="100" value="1000">
         </div>
 
         <div class="control-group">
@@ -135,8 +152,9 @@
 
         <div class="stats">
             <div>FPS: <span id="fps">--</span></div>
-            <div>Compute Time: <span id="computeTime">--</span>ms</div>
-            <div>Render Time: <span id="renderTime">--</span>ms</div>
+            <div>Compute Encode (CPU): <span id="computeTime">--</span>ms</div>
+            <div>Render Encode/Submit (CPU): <span id="renderTime">--</span>ms</div>
+            <div>GPU timings are not measured; readback occurs only on mode switch or resize.</div>
         </div>
     </div>
 
