@@ -113,6 +113,34 @@ export const BOUNDARY_MODE_DELETE = 'delete';
 export const DEFAULT_BOUNDARY_MODE = BOUNDARY_MODE_BOUNCE;
 export const BOUNDARY_MODE_CODES = { bounce: 0, wrap: 1, delete: 2 };
 
+// ---- 2D grid/PM shared structural + timing constants --------------------
+// The mass-accumulation grid resolution (1024x1024) was previously
+// copy-pasted identically into grid-cpu.js/grid-gpu.js (as the base LOD
+// level) and pm-gpu.js (as its single FFT grid) — centralized so a future
+// resolution change can't happen in only one of the three.
+export const GRID_RESOLUTION = 1024; // must be a power of two
+export const DOMAIN_SIZE = 2 * DOMAIN_HALF_SIZE;
+
+// Fixed internal physics timestep, in simulation-time seconds. Was
+// previously the literal 0.016 copy-pasted into every simulation file
+// (2D and 3D). grid-cpu.js/grid-gpu.js multiply it directly by timeScale
+// each frame; pm-gpu.js instead accumulates real time and takes 0+
+// FIXED_DT-sized sub-steps per rendered frame (see its stepSimulation) so
+// its stability never depends on timeScale.
+export const FIXED_DT = 0.016;
+
+// ---- 2D particle-count tiers ---------------------------------------------
+// grid-cpu.js runs entirely on the CPU (typed arrays, JS loops) so it caps
+// out much lower than the two GPU-compute algorithms, which share an
+// identical, much higher cap/step/range.
+export const MAX_CPU_GRID_PARTICLES = 1000000;
+export const CPU_GRID_PARTICLE_COUNT_RANGE = { min: 100, max: MAX_CPU_GRID_PARTICLES, step: 100 };
+export const DEFAULT_CPU_GRID_PARTICLE_COUNT = 250000;
+
+export const MAX_GPU_PARTICLES = 4000000;
+export const GPU_PARTICLE_COUNT_RANGE = { min: 0, max: MAX_GPU_PARTICLES, step: 100000 };
+export const DEFAULT_GPU_PARTICLE_COUNT = 1000000;
+
 // Wraps a coordinate into [-DOMAIN_HALF_SIZE, DOMAIN_HALF_SIZE) for
 // periodic boundaries. Handles arbitrarily large/negative values (not just
 // single overshoots) via modulo arithmetic.
@@ -173,4 +201,19 @@ export function bindRange(input, valueEl, { parse = parseFloat, format = (v) => 
 export function bindSelect(select, onChange) {
     if (!select) return;
     select.addEventListener('change', (e) => onChange(e.target.value));
+}
+
+// Applies a {min,max,step} range object and a default value to a range
+// <input> (and its paired value-label element), keeping the slider's
+// bounds in sync with whichever model/algorithm is currently active. Call
+// this any time the active simulation's own range constants should take
+// over the control — initial page load, an algorithm/backend switch, etc.
+// — instead of hand-setting .min/.max/.step/.value in each app file.
+export function applySliderRange(input, valueEl, range, defaultValue, format = (v) => String(v)) {
+    if (!input) return;
+    input.min = range.min;
+    input.max = range.max;
+    input.step = range.step;
+    input.value = defaultValue;
+    if (valueEl) valueEl.textContent = format(defaultValue);
 }

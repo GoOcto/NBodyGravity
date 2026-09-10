@@ -125,8 +125,9 @@ webgpu-nbody/
 ├── js/
 │   ├── common.js         # shared constants + helpers (WebGPU init, dispatch
 │   │                      # sizing, shader loading, boundary-mode constants,
-│   │                      # control-panel binding helpers) used by every
-│   │                      # simulation/app file below
+│   │                      # grid resolution/particle-count tiers/fixed
+│   │                      # timestep, control-panel binding/slider-sync
+│   │                      # helpers) used by every simulation/app file below
 │   ├── camera.js          # orbital camera controller (3D only)
 │   ├── gl-matrix.js       # minimal mat4/vec3 helpers (3D only)
 │   ├── sim-3d.js          # SimpleNBodySimulation: CPU direct O(N²) + GPU FMM
@@ -146,9 +147,18 @@ state, WebGPU pipelines/bind groups, integration, rendering) so the
 algorithm-specific logic — where these demos genuinely diverge — stays
 isolated to one file and one shader set per algorithm, while anything that
 *should* be identical across algorithms (domain size, mass scaling,
-boundary-mode codes, damping/restitution defaults, WebGPU bootstrap, shader
-loading, control-panel wiring helpers) is centralized in `js/common.js` and
-can no longer silently drift apart between files.
+boundary-mode codes, damping/restitution/orbital-speed defaults, the shared
+mass-grid resolution, the fixed physics timestep, particle-count tiers,
+WebGPU bootstrap, shader loading, control-panel wiring/slider-sync helpers)
+is centralized in `js/common.js` and can no longer silently drift apart
+between files. Each `sim-*.js` file's own top-of-file block is left with
+only the constants that are genuinely specific to that one algorithm (e.g.
+`FORCE_SCALE`, LOD level count, blur kernel radius, FFT sub-stepping cap).
+Where a value is exposed as a control-panel slider (e.g. Particle Count's
+min/max/step, which differs a lot between the CPU-only grid algorithm and
+the two GPU algorithms), `common.js`'s `applySliderRange()` keeps the
+slider's bounds in sync with whichever model/algorithm is active — called
+on initial page load and again on every algorithm/backend switch.
 
 ### Compute Shaders (WGSL) — 3D (FMM octree)
 - `octree-leaf.wgsl`: Assigns particles to fixed-depth leaf cells on the GPU

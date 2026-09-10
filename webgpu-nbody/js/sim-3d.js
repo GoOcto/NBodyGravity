@@ -12,8 +12,8 @@
 // Opening angle (theta) and softening length ARE exposed: both are plain
 // per-frame uniform params already, so no shader changes are needed.
 import { CameraController } from './camera.js';
+import { initWebGPU, FIXED_DT } from './common.js';
 import { mat4, vec3 } from './gl-matrix.js';
-import { initWebGPU } from './common.js';
 
 const WORKGROUP_SIZE = 64;
 const PARTICLE_FLOATS = 8;
@@ -24,7 +24,7 @@ export const DEFAULT_OCTREE_THETA = 0.65;
 export const DEFAULT_OCTREE_SOFTENING = 0.01;
 export const OCTREE_THETA_RANGE = { min: 0.1, max: 1.5, step: 0.01 };
 export const OCTREE_SOFTENING_RANGE = { min: 0.001, max: 0.2, step: 0.001 };
-export const PARTICLE_COUNT_RANGE = { min: 100, max: 40000, step: 100 };
+export const PARTICLE_COUNT_RANGE = { min: 100, max: 5000, step: 100 };
 export const DEFAULT_PARTICLE_COUNT = 1000;
 const CPU_DISTANCE_EPSILON = 0.01;
 const OCTREE_LEVEL_OFFSETS = [0, 1, 9, 73, 585];
@@ -509,9 +509,9 @@ export class SimpleNBodySimulation {
         const commandEncoder = this.device.createCommandEncoder();
 
         if (this.mode === 'cpu') {
-            this.updateCpuPhysics(0.016);
+            this.updateCpuPhysics(FIXED_DT);
         } else if (this.mode === 'gpu') {
-            this.writeParams(0.016);
+            this.writeParams(FIXED_DT);
             this.encodeFmmCompute(commandEncoder);
         } else {
             throw new Error(`Unknown simulation mode: ${this.mode}`);

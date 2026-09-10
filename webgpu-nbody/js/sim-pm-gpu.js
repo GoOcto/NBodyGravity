@@ -40,20 +40,20 @@
 //
 // Shares domain/tuning constants and helpers with sim-grid-cpu.js and
 // sim-grid-gpu.js via common.js so they can't silently drift apart; only
-// the truly algorithm-specific tuning (FORCE_SCALE, FFT grid size) stays
-// local to this file.
+// the truly algorithm-specific tuning (FORCE_SCALE, sub-stepping cap)
+// stays local to this file.
 import {
-    initWebGPU, dispatchCount, formatTimeScale, computeCoverQuadVertices,
+    initWebGPU, dispatchCount, computeCoverQuadVertices,
     DOMAIN_HALF_SIZE, MASS_VISUAL_SCALE, MASS_FIXED_POINT_SCALE,
     DEFAULT_RESTITUTION, BOUNDARY_MODE_CODES, DEFAULT_BOUNDARY_MODE,
     ALIVE_READBACK_INTERVAL_FRAMES, DEFAULT_ORBITAL_SPEED,
+    GRID_RESOLUTION, DOMAIN_SIZE, FIXED_DT, GPU_PARTICLE_COUNT_RANGE, DEFAULT_GPU_PARTICLE_COUNT,
 } from './common.js';
 
-const MAX_PARTICLES = 4000000;
-export const PARTICLE_COUNT_RANGE = { min: 0, max: MAX_PARTICLES, step: 100000 };
-export const DEFAULT_PARTICLE_COUNT = 1000000;
-const DOMAIN_SIZE = 2 * DOMAIN_HALF_SIZE;
-const GRID_DIM = 1024; // must be a power of two
+const MAX_PARTICLES = GPU_PARTICLE_COUNT_RANGE.max;
+export const PARTICLE_COUNT_RANGE = GPU_PARTICLE_COUNT_RANGE;
+export const DEFAULT_PARTICLE_COUNT = DEFAULT_GPU_PARTICLE_COUNT;
+const GRID_DIM = GRID_RESOLUTION;
 const LOG_GRID_DIM = Math.log2(GRID_DIM);
 const CELL_SIZE = DOMAIN_SIZE / GRID_DIM;
 const CELL_COUNT = GRID_DIM * GRID_DIM;
@@ -66,10 +66,6 @@ const CELL_COUNT = GRID_DIM * GRID_DIM;
 // size, so this constant is far smaller than the blur demo's.
 const FORCE_SCALE = 0.15;
 
-// Fixed internal integration step, in simulation-time seconds. This NEVER
-// scales with timeScale (see stepsForFrame) — that's the whole point of
-// decoupling stability from playback speed.
-const FIXED_DT = 0.016;
 // Upper bound on how many FIXED_DT sub-steps run per rendered frame. At
 // extreme timeScale values (or a slow/backgrounded tab), playback falls
 // behind the requested multiplier rather than taking one giant unstable

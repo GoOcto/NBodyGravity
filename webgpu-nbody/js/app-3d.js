@@ -5,7 +5,7 @@ import {
     SimpleNBodySimulation, PARTICLE_COUNT_RANGE, DEFAULT_PARTICLE_COUNT,
     OCTREE_THETA_RANGE, OCTREE_SOFTENING_RANGE, DEFAULT_OCTREE_THETA, DEFAULT_OCTREE_SOFTENING,
 } from './sim-3d.js';
-import { bindRange, bindSelect } from './common.js';
+import { bindRange, bindSelect, applySliderRange } from './common.js';
 
 class App {
     constructor() {
@@ -45,26 +45,18 @@ class App {
     // the simulation is constructed, so the markup never needs to hardcode
     // (and risk drifting from) these values.
     applyInitialControlValues() {
-        const particleCountSlider = document.getElementById('particleCount');
-        particleCountSlider.min = PARTICLE_COUNT_RANGE.min;
-        particleCountSlider.max = PARTICLE_COUNT_RANGE.max;
-        particleCountSlider.step = PARTICLE_COUNT_RANGE.step;
-        particleCountSlider.value = DEFAULT_PARTICLE_COUNT;
-        document.getElementById('particleCountValue').textContent = DEFAULT_PARTICLE_COUNT;
-
-        const thetaSlider = document.getElementById('octreeTheta');
-        thetaSlider.min = OCTREE_THETA_RANGE.min;
-        thetaSlider.max = OCTREE_THETA_RANGE.max;
-        thetaSlider.step = OCTREE_THETA_RANGE.step;
-        thetaSlider.value = DEFAULT_OCTREE_THETA;
-        document.getElementById('octreeThetaValue').textContent = DEFAULT_OCTREE_THETA.toFixed(2);
-
-        const softeningSlider = document.getElementById('octreeSoftening');
-        softeningSlider.min = OCTREE_SOFTENING_RANGE.min;
-        softeningSlider.max = OCTREE_SOFTENING_RANGE.max;
-        softeningSlider.step = OCTREE_SOFTENING_RANGE.step;
-        softeningSlider.value = DEFAULT_OCTREE_SOFTENING;
-        document.getElementById('octreeSofteningValue').textContent = DEFAULT_OCTREE_SOFTENING.toFixed(3);
+        applySliderRange(
+            document.getElementById('particleCount'), document.getElementById('particleCountValue'),
+            PARTICLE_COUNT_RANGE, DEFAULT_PARTICLE_COUNT,
+        );
+        applySliderRange(
+            document.getElementById('octreeTheta'), document.getElementById('octreeThetaValue'),
+            OCTREE_THETA_RANGE, DEFAULT_OCTREE_THETA, (v) => v.toFixed(2),
+        );
+        applySliderRange(
+            document.getElementById('octreeSoftening'), document.getElementById('octreeSofteningValue'),
+            OCTREE_SOFTENING_RANGE, DEFAULT_OCTREE_SOFTENING, (v) => v.toFixed(3),
+        );
     }
 
     resizeCanvas(canvas) {

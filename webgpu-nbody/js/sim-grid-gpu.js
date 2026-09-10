@@ -33,22 +33,22 @@
 //
 // Shares domain/tuning constants and helpers with sim-grid-cpu.js and
 // sim-pm-gpu.js via common.js so they can't silently drift apart; only the
-// truly algorithm-specific tuning (FORCE_SCALE, grid/LOD resolution) stays
+// truly algorithm-specific tuning (FORCE_SCALE, LOD level count) stays
 // local to this file.
 import {
-    initWebGPU, dispatchCount, formatTimeScale, computeCoverQuadVertices,
+    initWebGPU, dispatchCount, computeCoverQuadVertices,
     DOMAIN_HALF_SIZE, MASS_VISUAL_SCALE, MASS_FIXED_POINT_SCALE,
     DEFAULT_DAMPING, DEFAULT_RESTITUTION, BOUNDARY_MODE_CODES, DEFAULT_BOUNDARY_MODE,
     ALIVE_READBACK_INTERVAL_FRAMES, DEFAULT_ORBITAL_SPEED, discOrbitalSpeed,
+    GRID_RESOLUTION, DOMAIN_SIZE, FIXED_DT, GPU_PARTICLE_COUNT_RANGE, DEFAULT_GPU_PARTICLE_COUNT,
 } from './common.js';
 
-const MAX_PARTICLES = 4000000;
-export const PARTICLE_COUNT_RANGE = { min: 0, max: MAX_PARTICLES, step: 100000 };
-export const DEFAULT_PARTICLE_COUNT = 1000000;
-const BASE_GRID_SIZE = 1024; // must be a power of two
+const MAX_PARTICLES = GPU_PARTICLE_COUNT_RANGE.max;
+export const PARTICLE_COUNT_RANGE = GPU_PARTICLE_COUNT_RANGE;
+export const DEFAULT_PARTICLE_COUNT = DEFAULT_GPU_PARTICLE_COUNT;
+const BASE_GRID_SIZE = GRID_RESOLUTION;
 const NUM_LOD_LEVELS = 9;    // 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16 -> 8 -> 4
 const FORCE_SCALE = 0.002;     // overall tuning constant, see 2D-optimized.md
-const FIXED_DT = 0.016;
 
 export class GpuGridNBodySimulation {
     constructor(canvas) {
@@ -76,7 +76,7 @@ export class GpuGridNBodySimulation {
         this.levels = [];
         let dim = BASE_GRID_SIZE;
         for (let i = 0; i < NUM_LOD_LEVELS; i++) {
-            this.levels.push({ dim, cellSize: (2 * DOMAIN_HALF_SIZE) / dim });
+            this.levels.push({ dim, cellSize: DOMAIN_SIZE / dim });
             dim = dim >> 1;
         }
         this.levelBuffers = [];

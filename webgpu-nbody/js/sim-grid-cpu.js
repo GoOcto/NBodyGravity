@@ -36,23 +36,23 @@
 //
 // Shares domain/tuning constants and helpers with sim-grid-gpu.js and
 // sim-pm-gpu.js via common.js so they can't silently drift apart; only the
-// truly algorithm-specific tuning (FORCE_SCALE, grid/LOD resolution, blur
+// truly algorithm-specific tuning (FORCE_SCALE, LOD level count, blur
 // kernel) stays local to this file.
 import {
-    initWebGPU, formatTimeScale, computeCoverQuadVertices, wrapCoordinate,
+    initWebGPU, computeCoverQuadVertices, wrapCoordinate,
     DOMAIN_HALF_SIZE, MASS_VISUAL_SCALE, DEFAULT_DAMPING, DEFAULT_RESTITUTION,
-    BOUNDARY_MODE_WRAP, BOUNDARY_MODE_BOUNCE, BOUNDARY_MODE_DELETE, DEFAULT_BOUNDARY_MODE,
+    BOUNDARY_MODE_WRAP, BOUNDARY_MODE_DELETE, DEFAULT_BOUNDARY_MODE,
     DEFAULT_ORBITAL_SPEED, discOrbitalSpeed,
+    GRID_RESOLUTION, DOMAIN_SIZE, FIXED_DT, CPU_GRID_PARTICLE_COUNT_RANGE, DEFAULT_CPU_GRID_PARTICLE_COUNT,
 } from './common.js';
 
-const MAX_PARTICLES = 1000000;
-export const PARTICLE_COUNT_RANGE = { min: 100, max: MAX_PARTICLES, step: 100 };
-export const DEFAULT_PARTICLE_COUNT = 250000;
-const BASE_GRID_SIZE = 1024; // must be a power of two
+const MAX_PARTICLES = CPU_GRID_PARTICLE_COUNT_RANGE.max;
+export const PARTICLE_COUNT_RANGE = CPU_GRID_PARTICLE_COUNT_RANGE;
+export const DEFAULT_PARTICLE_COUNT = DEFAULT_CPU_GRID_PARTICLE_COUNT;
+const BASE_GRID_SIZE = GRID_RESOLUTION;
 const NUM_LOD_LEVELS = 5;   // 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16
 const BLUR_KERNEL_RADIUS = 3;
 const FORCE_SCALE = 0.02;    // overall tuning constant, see 2D-optimized.md
-const FIXED_DT = 0.016;
 
 const COLOR_LUT_SIZE = 256;
 
@@ -186,7 +186,7 @@ export class GridNBodySimulation {
             const cells = dim * dim;
             this.levels.push({
                 dim,
-                cellSize: (2 * DOMAIN_HALF_SIZE) / dim,
+                cellSize: DOMAIN_SIZE / dim,
                 mass: new Float32Array(cells),
                 temp: new Float32Array(cells),
                 field: new Float32Array(cells),

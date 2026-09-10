@@ -9,7 +9,7 @@
 import { GridNBodySimulation, PARTICLE_COUNT_RANGE as CPU_GRID_RANGE, DEFAULT_PARTICLE_COUNT as CPU_GRID_DEFAULT } from './sim-grid-cpu.js';
 import { GpuGridNBodySimulation, PARTICLE_COUNT_RANGE as GPU_GRID_RANGE, DEFAULT_PARTICLE_COUNT as GPU_GRID_DEFAULT } from './sim-grid-gpu.js';
 import { PmGpuNBodySimulation, PARTICLE_COUNT_RANGE as PM_GPU_RANGE, DEFAULT_PARTICLE_COUNT as PM_GPU_DEFAULT } from './sim-pm-gpu.js';
-import { bindRange, bindSelect, formatTimeScale, DEFAULT_DAMPING, DEFAULT_RESTITUTION, DEFAULT_BOUNDARY_MODE, DEFAULT_ORBITAL_SPEED } from './common.js';
+import { bindRange, bindSelect, applySliderRange, formatTimeScale, DEFAULT_DAMPING, DEFAULT_RESTITUTION, DEFAULT_BOUNDARY_MODE, DEFAULT_ORBITAL_SPEED, ORBITAL_SPEED_RANGE } from './common.js';
 
 // Registry describing each selectable algorithm: its class, its
 // particle-count range/default (these differ a lot: CPU grid tops out at
@@ -61,8 +61,10 @@ class App {
         document.getElementById('dampingValue').textContent = DEFAULT_DAMPING.toFixed(3);
         document.getElementById('restitution').value = DEFAULT_RESTITUTION;
         document.getElementById('restitutionValue').textContent = DEFAULT_RESTITUTION.toFixed(2);
-        document.getElementById('orbitalSpeed').value = DEFAULT_ORBITAL_SPEED;
-        document.getElementById('orbitalSpeedValue').textContent = DEFAULT_ORBITAL_SPEED.toFixed(2);
+        applySliderRange(
+            document.getElementById('orbitalSpeed'), document.getElementById('orbitalSpeedValue'),
+            ORBITAL_SPEED_RANGE, DEFAULT_ORBITAL_SPEED, (v) => v.toFixed(2),
+        );
         document.getElementById('boundaryMode').value = DEFAULT_BOUNDARY_MODE;
 
         this.setupStaticControls();
@@ -104,19 +106,18 @@ class App {
         algorithmStatus.style.color = '#ffd166';
 
         const particleCountSlider = document.getElementById('particleCount');
+        const particleCountValueEl = document.getElementById('particleCountValue');
         // Preserve the user's particle count across a switch when it fits
         // within the new algorithm's range; otherwise fall back to that
         // algorithm's own default (e.g. switching from GPU's 4M range down
         // to CPU grid's 1M cap).
+        const previousParticleCount = parseInt(particleCountSlider.value, 10);
+        applySliderRange(particleCountSlider, particleCountValueEl, config.particleCountRange, config.defaultParticleCount);
         const requestedParticleCount = firstLoad
             ? config.defaultParticleCount
-            : Math.min(parseInt(particleCountSlider.value, 10), config.particleCountRange.max);
-
-        particleCountSlider.min = config.particleCountRange.min;
-        particleCountSlider.max = config.particleCountRange.max;
-        particleCountSlider.step = config.particleCountRange.step;
+            : Math.min(previousParticleCount, config.particleCountRange.max);
         particleCountSlider.value = requestedParticleCount;
-        document.getElementById('particleCountValue').textContent = requestedParticleCount;
+        particleCountValueEl.textContent = requestedParticleCount;
 
         const dampingSlider = document.getElementById('damping');
         dampingSlider.disabled = !config.supportsDamping;
