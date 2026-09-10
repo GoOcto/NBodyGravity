@@ -34,10 +34,10 @@
 const MAX_PARTICLES = 4000000;
 const DOMAIN_HALF_SIZE = 50;
 const BASE_GRID_SIZE = 1024; // must be a power of two
-const NUM_LOD_LEVELS = 5;    // 1024 -> 512 -> 256 -> 128 -> 64
-const FORCE_SCALE = 2.0;     // overall tuning constant, see 2D-optimized.md
+const NUM_LOD_LEVELS = 9;    // 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16 -> 8 -> 4
+const FORCE_SCALE = 0.002;     // overall tuning constant, see 2D-optimized.md
 const DAMPING = 0.999;
-const RESTITUTION = 0.99;
+const RESTITUTION = 1;
 const FIXED_DT = 0.016;
 const MASS_VISUAL_SCALE = 2.0;
 // Fixed-point scale for the atomic mass-scatter pass (WGSL has no
@@ -457,7 +457,7 @@ class GpuGridNBodySimulation {
         const alive = new Uint32Array(n).fill(1);
 
         const minRadius = 0.2;
-        const maxRadius = DOMAIN_HALF_SIZE * 0.85;
+        const maxRadius = DOMAIN_HALF_SIZE * 0.6;
 
         for (let i = 0; i < n; i++) {
             const radius = minRadius + Math.random() * (maxRadius - minRadius);
@@ -468,10 +468,10 @@ class GpuGridNBodySimulation {
             mass[i] = 0.6 + Math.random() * 0.8;
 
             const enclosedMassEstimate = n * 0.6 * (radius / maxRadius);
-            const speed = Math.sqrt(this.gravityStrength * FORCE_SCALE * enclosedMassEstimate / radius) * 0.015;
+            const speed = Math.sqrt(this.gravityStrength * FORCE_SCALE * enclosedMassEstimate / radius) * 0.3;
 
             velX[i] = -speed * Math.sin(theta);
-            velY[i] = speed * Math.cos(theta);
+            velY[i] =  speed * Math.cos(theta);
         }
 
         const dev = this.device;

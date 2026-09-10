@@ -21,9 +21,9 @@ const DOMAIN_HALF_SIZE = 50;
 const BASE_GRID_SIZE = 1024; // must be a power of two
 const NUM_LOD_LEVELS = 5;   // 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16
 const BLUR_KERNEL_RADIUS = 3;
-const FORCE_SCALE = 2.0;    // overall tuning constant, see 2D-optimized.md
+const FORCE_SCALE = 0.02;    // overall tuning constant, see 2D-optimized.md
 const DAMPING = 0.999;
-const RESTITUTION = 0.99;
+const RESTITUTION = 1;
 const FIXED_DT = 0.016;
 
 // Boundary handling modes (see 2D-optimized.md discussion + follow-up request):
@@ -66,15 +66,18 @@ function buildBlurKernel(radius) {
 
 const BLUR_KERNEL = buildBlurKernel(BLUR_KERNEL_RADIUS);
 
-// Heatmap color ramp: black -> dark blue -> red -> orange -> white,
 // approximating how a cell's accumulated mass ("heat") should look as it
 // grows from empty to densely packed with particles.
 const COLOR_STOPS = [
-    { t: 0.0,   color: [  0,   0,   0] },
-    { t: 0.25,  color: [ 20,  20, 100] },
-    { t: 0.5,   color: [160,  20,  20] },
-    { t: 0.75,  color: [230, 150,   0] },
-    { t: 1.0,   color: [255, 255, 255] },
+    { t: 0.00, color: [  0,   0,   0] },
+    { t: 0.12, color: [ 10,  15,  45] },
+    { t: 0.25, color: [ 60,  10,  65] },
+    { t: 0.40, color: [160,  10,  30] },
+    { t: 0.55, color: [230,  60,  10] },
+    { t: 0.70, color: [255, 140,   0] },
+    { t: 0.85, color: [255, 215,   0] },
+    { t: 0.95, color: [255, 245, 200] },
+    { t: 1.00, color: [255, 255, 255] },
 ];
 
 function buildColorLUT(size) {
@@ -247,7 +250,7 @@ class GridNBodySimulation {
         // sidestep a degenerate zero-radius velocity sample) with circular
         // orbital velocity, similar in spirit to a flat galaxy disc.
         const minRadius = 0.2;
-        const maxRadius = DOMAIN_HALF_SIZE * 0.85;
+        const maxRadius = DOMAIN_HALF_SIZE * 0.6;
 
         for (let i = 0; i < this.particleCount; i++) {
             const radius = minRadius + Math.random() * (maxRadius - minRadius);
@@ -257,11 +260,8 @@ class GridNBodySimulation {
             this.posY[i] = radius * Math.sin(theta);
             this.mass[i] = 0.6 + Math.random() * 0.8;
 
-            // Heuristic orbital speed: assume mass grows roughly with enclosed
-            // radius (like a uniform disc), so outer particles orbit slower.
             const enclosedMassEstimate = this.particleCount * 0.6 * (radius / maxRadius);
-            // const speed = Math.sqrt(this.gravityStrength * FORCE_SCALE * enclosedMassEstimate / radius) * 0.15;
-            const speed = (this.gravityStrength * FORCE_SCALE * enclosedMassEstimate / radius) * 0.0015;
+            const speed = Math.sqrt(this.gravityStrength * FORCE_SCALE * enclosedMassEstimate / radius) * 0.3;
 
             this.velX[i] = -speed * Math.sin(theta);
             this.velY[i] = speed * Math.cos(theta);

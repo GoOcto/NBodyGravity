@@ -9,7 +9,11 @@ A modern, high-performance N-body gravity simulation using WebGPU compute shader
 
 ## 🚀 Features
 
-- **Two live physics backends**: Switch between the existing CPU direct O(N²) solver and a GPU FMM-style octree solver
+- **Four live 2D/GPU demos**, reachable from any page's "Demo" dropdown:
+  Direct O(N²) (CPU), FMM Octree (CPU/GPU), Grid-Based blur approximation
+  (CPU and GPU compute), and a GPU **Particle-Mesh FFT Poisson solver**
+  (`index-pm-gpu.html`)
+- **Two live physics backends** (Direct/FMM demos): Switch between the existing CPU direct O(N²) solver and a GPU FMM-style octree solver
 - **State-preserving switching**: GPU state is read back only before entering CPU mode or resizing the particle set; CPU state is uploaded before entering GPU mode
 - **Real-time N-Body Physics**: Direct interactions remain available for near-field cells while distant cells use octree multipoles
 - **Interactive Controls**: Adjust gravity strength, particle count, time scale, and damping in real-time
@@ -121,6 +125,58 @@ only when switching from GPU to CPU or resizing the particle set.
 - Storage buffers for particle data
 - Uniform buffers for simulation parameters
 - Bind groups for resource management
+
+## 🧮 Particle-Mesh GPU Demo (`index-pm-gpu.html` / `main-pm-gpu.js`)
+
+Alongside the grid-based blur approximation (`index-optimized-gpu.html` /
+`main-optimized-gpu.js`), the repo also has a physically-grounded
+**Particle-Mesh (PM)** GPU demo. Where the blur-based demo approximates
+gravity with a hand-tuned separable-blur kernel across a multi-resolution
+grid hierarchy, the PM demo actually solves the field equation:
+
+1. **Cloud-in-Cell (CIC) mass deposit** — each particle bilinearly spreads
+   its mass across its 4 surrounding grid cells (`pm-mass-scatter-cic.wgsl`),
+   rather than the nearest-grid-point deposit the blur demo uses.
+2. **2D FFT** of the single (no LOD hierarchy) mass grid, via GPU compute
+   shaders implementing a from-scratch, ping-pong, bit-reversal +
+   Cooley-Tukey butterfly FFT (`pm-fft-*.wgsl`).
+3. **The true 2D Poisson equation is solved exactly** in the frequency
+   domain — multiplying by the Green's function `1/|k|²` and zeroing the
+   undefined k=0 (mean-density) term, the standard periodic-Poisson trick
+   (`pm-poisson-greens.wgsl`) — rather than approximated by a blur kernel.
+   This models genuine 2D gravity: a logarithmic potential, i.e. a force
+   that decays as `1/r`, not the 3D-style `1/r²` analog the blur demo's
+   kernel was tuned to mimic.
+4. An **inverse 2D FFT** transforms back to a real potential field
+   (`pm-potential-extract.wgsl`), whose gradient (reusing the blur demo's
+   `gradient.wgsl`/`accumulate-gradient.wgsl` unmodified) gives each
+   particle's acceleration via the same matching bilinear interpolation
+   used for the CIC deposit (avoiding self-force artifacts).
+5. **No velocity damping** — `pm-integrate.wgsl` is a plain symplectic
+   Euler integrator with no damping multiply, unlike the blur demo's
+   `integrate.wgsl`.
+6. **Fixed internal integration sub-stepping, independent of playback
+   speed** — the physics step size (`FIXED_DT`) never changes; a
+   real-time accumulator decides how many fixed-size steps to run per
+   rendered frame (capped, so extreme Time Scale values fall behind
+   rather than taking one giant, unstable step or unboundedly stalling
+   the frame). This decouples numerical stability from the Time Scale
+   slider entirely.
+
+Because the FFT Poisson solve is inherently periodic, gravity always wraps
+at the domain edge (mass near one edge gravitationally interacts with the
+opposite edge) regardless of the selected particle `Boundary Handling`
+mode — that setting only affects what happens to a particle's own
+position/velocity at the edge, not the field solve itself.
+
+**Initial orbital velocities** are also computed on the GPU rather than
+from an analytic formula: `initializeParticles()` uploads the random disc
+with zero velocity, runs one field-solve pass to get the *actual*
+acceleration field for that specific mass distribution, then
+`pm-init-circular-velocity.wgsl` converts each particle's local
+(radially-inward) acceleration into the exact tangential speed needed for
+a circular orbit (`v = sqrt(r · |accel|)`) — no CPU readback, and no
+guessing at the disc's enclosed-mass profile.
 
 ## 🎨 Customization
 

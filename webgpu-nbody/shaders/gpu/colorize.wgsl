@@ -33,22 +33,38 @@ struct LevelParams {
 @group(0) @binding(2) var<storage, read> rawMass: array<f32>;
 @group(0) @binding(3) var outputTex: texture_storage_2d<rgba8unorm, write>;
 
-fn colorRamp(t: f32) -> vec3<f32> {
-    let c0 = vec3<f32>(  0.0,   0.0,   0.0);
-    let c1 = vec3<f32>( 20.0,  20.0, 100.0) / 255.0;
-    let c2 = vec3<f32>(150.0,  20.0,  20.0) / 255.0;
-    let c3 = vec3<f32>(220.0, 150.0,   0.0) / 255.0;
-    let c4 = vec3<f32>(255.0, 255.0, 255.0) / 255.0;
+// fn colorRamp(t: f32) -> vec3<f32> {
+//     let c0 = vec3<f32>(  0.0,   0.0,   0.0);
+//     let c1 = vec3<f32>( 20.0,  20.0, 100.0) / 255.0;
+//     let c2 = vec3<f32>(150.0,  20.0,  20.0) / 255.0;
+//     let c3 = vec3<f32>(220.0, 150.0,   0.0) / 255.0;
+//     let c4 = vec3<f32>(255.0, 255.0, 255.0) / 255.0;
 
-    if (t < 0.3) {
-        return mix(c0, c1, t / 0.25);
-    } else if (t < 0.6) {
-        return mix(c1, c2, (t - 0.25) / 0.25);
-    } else if (t < 0.9) {
-        return mix(c2, c3, (t - 0.5) / 0.25);
-    } else {
-        return mix(c3, c4, (t - 0.75) / 0.25);
-    }
+//     if      (t < 0.3) { return mix(c0, c1, t / 0.25) } 
+// 	else if (t < 0.6) { return mix(c1, c2, (t - 0.25) / 0.25) } 
+// 	else if (t < 0.9) { return mix(c2, c3, (t - 0.5) / 0.25) } 
+// 	else              { return mix(c3, c4, (t - 0.75) / 0.25) }
+// }
+
+fn colorRamp(t: f32) -> vec3<f32> {
+    let c0 = vec3<f32>(  0.0,   0.0,   0.0) / 255.0; //  0% Black
+    let c1 = vec3<f32>( 10.0,  15.0,  45.0) / 255.0; // 12% Dark Indigo
+    let c2 = vec3<f32>( 60.0,  10.0,  65.0) / 255.0; // 25% Deep Violet
+    let c3 = vec3<f32>(160.0,  10.0,  30.0) / 255.0; // 40% Crimson
+    let c4 = vec3<f32>(230.0,  60.0,  10.0) / 255.0; // 55% Red-Orange
+    let c5 = vec3<f32>(255.0, 140.0,   0.0) / 255.0; // 70% Amber
+    let c6 = vec3<f32>(255.0, 215.0,   0.0) / 255.0; // 85% Golden Yellow
+    let c7 = vec3<f32>(255.0, 245.0, 200.0) / 255.0; // 95% Warm White
+    let c8 = vec3<f32>(255.0, 255.0, 255.0) / 255.0; //100% Pure White
+
+    if      (t < 0.12) { return mix(c0, c1, clamp(t / 0.12, 0.0, 1.0)); }
+    else if (t < 0.25) { return mix(c1, c2, (t - 0.12) / 0.13); }
+    else if (t < 0.40) { return mix(c2, c3, (t - 0.25) / 0.15); }
+    else if (t < 0.55) { return mix(c3, c4, (t - 0.40) / 0.15); }
+    else if (t < 0.70) { return mix(c4, c5, (t - 0.55) / 0.15); }
+    else if (t < 0.85) { return mix(c5, c6, (t - 0.70) / 0.15); }
+    else if (t < 0.95) { return mix(c6, c7, (t - 0.85) / 0.10); }
+    else               { return mix(c7, c8, clamp((t - 0.95) / 0.05, 0.0, 1.0)); }
 }
 
 @compute @workgroup_size(64)

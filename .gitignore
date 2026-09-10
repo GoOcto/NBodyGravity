@@ -425,3 +425,5 @@ $RECYCLE.BIN/
 .directory
 .Trash-*
 .nfs*
+.gitignore
+deploy.sh
