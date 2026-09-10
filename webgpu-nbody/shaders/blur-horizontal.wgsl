@@ -1,6 +1,6 @@
 // Separable blur (2D-optimized.md Step 2.3), horizontal pass. Spreads mass
 // outward using a fixed 7-tap kernel approximating gravitational falloff
-// (1/(1+|r|)), matching buildBlurKernel(3) in main-optimized-gpu.js.
+// (1/(1+|r|)), matching buildBlurKernel(3) in js/sim-grid-gpu.js.
 // When level.wrap is set (periodic boundaries), edge taps wrap around
 // instead of clamping to the edge cell.
 

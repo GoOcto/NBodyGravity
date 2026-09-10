@@ -1,12 +1,12 @@
 // Particle-Mesh (PM) 2D N-body gravity simulation — GPU compute variant.
-// Unlike main-optimized-gpu.js's multi-resolution grid + separable-blur
+// Unlike sim-grid-gpu.js's multi-resolution grid + separable-blur
 // approximation (2D-optimized.md), this is a textbook particle-mesh
 // method:
-//   1. Cloud-in-Cell (CIC) mass deposit (shaders/gpu/pm-mass-scatter-cic.wgsl)
+//   1. Cloud-in-Cell (CIC) mass deposit (shaders/pm-mass-scatter-cic.wgsl)
 //      bilinearly spreads each particle's mass across its 4 surrounding
 //      cells, then mass-resolve.wgsl converts the atomic fixed-point grid
 //      to plain f32 (both the atomic trick and mass-resolve.wgsl are
-//      shared, unmodified, with main-optimized-gpu.js).
+//      shared, unmodified, with sim-grid-gpu.js).
 //   2. A single dim x dim 2D FFT (pm-fft-complexify / pm-fft-bitreverse /
 //      pm-fft-butterfly / pm-fft-transpose.wgsl) transforms the mass grid
 //      into the frequency domain.
@@ -21,7 +21,8 @@
 //      particle position — matching interpolation with the CIC deposit,
 //      avoiding self-force artifacts.
 //   6. pm-integrate.wgsl integrates with NO velocity damping (unlike
-//      integrate.wgsl's damping multiply).
+//      integrate.wgsl's damping multiply) — this is intentional, so the
+//      Damping control has no effect in this mode (setDamping is a no-op).
 //   7. colorize.wgsl (shared, unmodified) writes the heatmap texture.
 //
 // Steps 1-6 run once per FIXED_DT-sized physics sub-step; a real-time
@@ -36,9 +37,21 @@
 // boundaryMode (bounce/wrap/delete) is selected — that setting only
 // controls what happens to a particle's own position/velocity when it
 // reaches the edge, not the field solve itself.
+//
+// Shares domain/tuning constants and helpers with sim-grid-cpu.js and
+// sim-grid-gpu.js via common.js so they can't silently drift apart; only
+// the truly algorithm-specific tuning (FORCE_SCALE, FFT grid size) stays
+// local to this file.
+import {
+    initWebGPU, dispatchCount, formatTimeScale, computeCoverQuadVertices,
+    DOMAIN_HALF_SIZE, MASS_VISUAL_SCALE, MASS_FIXED_POINT_SCALE,
+    DEFAULT_RESTITUTION, BOUNDARY_MODE_CODES, DEFAULT_BOUNDARY_MODE,
+    ALIVE_READBACK_INTERVAL_FRAMES, DEFAULT_ORBITAL_SPEED,
+} from './common.js';
 
 const MAX_PARTICLES = 4000000;
-const DOMAIN_HALF_SIZE = 50;
+export const PARTICLE_COUNT_RANGE = { min: 0, max: MAX_PARTICLES, step: 100000 };
+export const DEFAULT_PARTICLE_COUNT = 1000000;
 const DOMAIN_SIZE = 2 * DOMAIN_HALF_SIZE;
 const GRID_DIM = 1024; // must be a power of two
 const LOG_GRID_DIM = Math.log2(GRID_DIM);
@@ -47,13 +60,12 @@ const CELL_COUNT = GRID_DIM * GRID_DIM;
 
 // Overall tuning constant folding in the Poisson equation's 2πG constant,
 // cell-area normalization, etc. — empirically tuned (see README) rather
-// than derived, same spirit as main-optimized-gpu.js's FORCE_SCALE. Unlike
+// than derived, same spirit as sim-grid-gpu.js's FORCE_SCALE. Unlike
 // the blur pipeline's bounded, normalized kernel, the FFT Poisson solve's
 // raw gradient magnitude scales with total mass and the domain's physical
 // size, so this constant is far smaller than the blur demo's.
 const FORCE_SCALE = 0.15;
 
-const RESTITUTION = 1;
 // Fixed internal integration step, in simulation-time seconds. This NEVER
 // scales with timeScale (see stepsForFrame) — that's the whole point of
 // decoupling stability from playback speed.
@@ -64,58 +76,7 @@ const FIXED_DT = 0.016;
 // step or pegging the GPU with an unbounded number of steps.
 const MAX_SUBSTEPS_PER_FRAME = 4;
 
-const MASS_VISUAL_SCALE = 2.0;
-// Fixed-point scale for the atomic CIC mass-deposit pass (WGSL has no
-// atomic<f32>). Must be large enough for sub-integer mass precision but
-// small enough that heavily-populated cells don't overflow i32.
-const MASS_FIXED_POINT_SCALE = 65536;
-const WORKGROUP_SIZE = 64;
-
-const BOUNDARY_MODE_CODES = { bounce: 0, wrap: 1, delete: 2 };
-const DEFAULT_BOUNDARY_MODE = 'bounce';
-
-const ALIVE_READBACK_INTERVAL_FRAMES = 20;
-
-function dispatchCount(n) {
-    return Math.max(1, Math.ceil(n / WORKGROUP_SIZE));
-}
-
-// Computes the 6 vertices (position.xy in NDC, uv.xy) of a full-canvas quad
-// that "cover-fits" the square (1:1) grid texture into a canvas of arbitrary
-// aspect ratio. Identical to the CPU/blur-GPU versions' helper of the same
-// name.
-function computeCoverQuadVertices(canvasAspect) {
-    let uvHalfW, uvHalfH;
-    if (canvasAspect >= 1) {
-        uvHalfW = 0.5;
-        uvHalfH = 0.5 / canvasAspect;
-    } else {
-        uvHalfW = 0.5 * canvasAspect;
-        uvHalfH = 0.5;
-    }
-
-    const u0 = 0.5 - uvHalfW, u1 = 0.5 + uvHalfW;
-    const v0 = 0.5 - uvHalfH, v1 = 0.5 + uvHalfH;
-
-    return new Float32Array([
-        -1, -1, u0, v0,
-         1, -1, u1, v0,
-        -1,  1, u0, v1,
-         1, -1, u1, v0,
-         1,  1, u1, v1,
-        -1,  1, u0, v1,
-    ]);
-}
-
-// Formats a time-scale multiplier (0.001x .. 1000x) with roughly 3
-// significant figures, used by the log-scale Time Scale slider's label.
-function formatTimeScale(scale) {
-    if (!(scale > 0)) return '0x';
-    const digits = Math.max(0, Math.min(6, 2 - Math.floor(Math.log10(scale))));
-    return `${scale.toFixed(digits)}x`;
-}
-
-class PmGpuNBodySimulation {
+export class PmGpuNBodySimulation {
     constructor(canvas) {
         this.canvas = canvas;
         this.device = null;
@@ -124,7 +85,19 @@ class PmGpuNBodySimulation {
         this.particleCount = 5;
         this.gravityStrength = 1.0;
         this.timeScale = 1.0;
+        // PM-FFT integration has no velocity damping by design (see
+        // header comment) — this field is kept only so the shared control
+        // panel can read/display a consistent value; setDamping is a
+        // no-op.
+        this.damping = 1.0;
+        this.restitution = DEFAULT_RESTITUTION;
         this.boundaryMode = DEFAULT_BOUNDARY_MODE;
+        // Scales the GPU-computed circular orbital speed (see
+        // pm-init-circular-velocity.wgsl) — kept as the same shared
+        // default/control as grid-cpu.js/grid-gpu.js's orbitalSpeed for a
+        // consistent panel, even though PM derives the base speed from the
+        // actual simulated field rather than an analytic formula.
+        this.orbitalSpeed = DEFAULT_ORBITAL_SPEED;
 
         // Last known alive count, refreshed periodically via an async GPU
         // readback (see maybeReadbackAliveCount). Optimistically set to
@@ -146,24 +119,9 @@ class PmGpuNBodySimulation {
     }
 
     async init() {
-        if (!navigator.gpu) {
-            throw new Error('WebGPU is not supported');
-        }
-
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) {
-            throw new Error('No appropriate GPUAdapter found');
-        }
-
-        this.device = await adapter.requestDevice();
-
-        this.context = this.canvas.getContext('webgpu');
-        const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-
-        this.context.configure({
-            device: this.device,
-            format: canvasFormat,
-        });
+        const { device, context } = await initWebGPU(this.canvas);
+        this.device = device;
+        this.context = context;
 
         this.createBuffers();
         this.writeStaticParams();
@@ -171,6 +129,7 @@ class PmGpuNBodySimulation {
         this.createBindGroups();
         this.initializeParticles();
     }
+
 
     // ---- GPU resource setup -------------------------------------------------
 
@@ -315,7 +274,9 @@ class PmGpuNBodySimulation {
     // stepSimulation). The unused `damping` slot exists only so this
     // buffer's byte layout matches what mass-resolve.wgsl,
     // accumulate-gradient.wgsl, and colorize.wgsl (all shared, unmodified,
-    // with main-optimized-gpu.js) expect.
+    // with sim-grid-gpu.js) expect. The first previously-unused padding
+    // slot (index 9) now carries orbitalSpeed, read only by
+    // pm-init-circular-velocity.wgsl.
     writeSimParams(dt) {
         const data = new ArrayBuffer(48);
         const f32 = new Float32Array(data);
@@ -324,11 +285,12 @@ class PmGpuNBodySimulation {
         f32[1] = 1.0; // damping: unused by pm-integrate.wgsl
         f32[2] = dt;
         f32[3] = DOMAIN_HALF_SIZE;
-        f32[4] = RESTITUTION;
+        f32[4] = this.restitution;
         u32[5] = BOUNDARY_MODE_CODES[this.boundaryMode];
         u32[6] = this.particleCount;
         f32[7] = MASS_FIXED_POINT_SCALE;
         f32[8] = MASS_VISUAL_SCALE;
+        f32[9] = this.orbitalSpeed;
         this.device.queue.writeBuffer(this.simParamsBuf, 0, data);
     }
 
@@ -346,20 +308,20 @@ class PmGpuNBodySimulation {
             gradientSrc, accumSrc, integrateSrc, initVelocitySrc, colorizeSrc,
             heatmapVertexSrc, heatmapFragmentSrc,
         ] = await Promise.all([
-            this.loadShader('./shaders/gpu/mass-clear.wgsl'),
-            this.loadShader('./shaders/gpu/pm-mass-scatter-cic.wgsl'),
-            this.loadShader('./shaders/gpu/mass-resolve.wgsl'),
-            this.loadShader('./shaders/gpu/pm-fft-complexify.wgsl'),
-            this.loadShader('./shaders/gpu/pm-fft-bitreverse.wgsl'),
-            this.loadShader('./shaders/gpu/pm-fft-butterfly.wgsl'),
-            this.loadShader('./shaders/gpu/pm-fft-transpose.wgsl'),
-            this.loadShader('./shaders/gpu/pm-poisson-greens.wgsl'),
-            this.loadShader('./shaders/gpu/pm-potential-extract.wgsl'),
-            this.loadShader('./shaders/gpu/gradient.wgsl'),
-            this.loadShader('./shaders/gpu/accumulate-gradient.wgsl'),
-            this.loadShader('./shaders/gpu/pm-integrate.wgsl'),
-            this.loadShader('./shaders/gpu/pm-init-circular-velocity.wgsl'),
-            this.loadShader('./shaders/gpu/colorize.wgsl'),
+            this.loadShader('./shaders/mass-clear.wgsl'),
+            this.loadShader('./shaders/pm-mass-scatter-cic.wgsl'),
+            this.loadShader('./shaders/mass-resolve.wgsl'),
+            this.loadShader('./shaders/pm-fft-complexify.wgsl'),
+            this.loadShader('./shaders/pm-fft-bitreverse.wgsl'),
+            this.loadShader('./shaders/pm-fft-butterfly.wgsl'),
+            this.loadShader('./shaders/pm-fft-transpose.wgsl'),
+            this.loadShader('./shaders/pm-poisson-greens.wgsl'),
+            this.loadShader('./shaders/pm-potential-extract.wgsl'),
+            this.loadShader('./shaders/gradient.wgsl'),
+            this.loadShader('./shaders/accumulate-gradient.wgsl'),
+            this.loadShader('./shaders/pm-integrate.wgsl'),
+            this.loadShader('./shaders/pm-init-circular-velocity.wgsl'),
+            this.loadShader('./shaders/colorize.wgsl'),
             this.loadShader('./shaders/grid-heatmap-vertex.wgsl'),
             this.loadShader('./shaders/grid-heatmap-fragment.wgsl'),
         ]);
@@ -640,6 +602,23 @@ class PmGpuNBodySimulation {
 
     setTimeScale(scale) { this.timeScale = scale; }
 
+    // No-op: PM-FFT integration has no velocity damping term by design
+    // (see header comment) — kept so the shared control panel can wire
+    // every simulation class's controls identically.
+    setDamping(damping) { this.damping = damping; }
+
+    setRestitution(restitution) { this.restitution = restitution; }
+
+    // Orbital Speed is an initial condition, not a live per-frame
+    // parameter, so (like setBoundaryMode) changing it immediately
+    // regenerates the disc (re-running the GPU field-solve + circular
+    // velocity pass with the new scale) rather than waiting for a manual
+    // Reset.
+    setOrbitalSpeed(orbitalSpeed) {
+        this.orbitalSpeed = orbitalSpeed;
+        this.initializeParticles();
+    }
+
     setBoundaryMode(mode) {
         this.boundaryMode = mode;
         this.initializeParticles();
@@ -849,116 +828,4 @@ class PmGpuNBodySimulation {
             this.lastTime = time;
         }
     }
-}
-
-// App wiring for index-pm-gpu.html controls (same DOM ids as the other
-// demos so pages/scripts are interchangeable).
-class App {
-    constructor() {
-        this.simulation = null;
-        this.animationId = null;
-    }
-
-    async init() {
-        const canvas = document.getElementById('canvas');
-        const loading = document.getElementById('loading');
-        const error = document.getElementById('error');
-        const controls = document.getElementById('controls');
-
-        try {
-            this.resizeCanvas(canvas);
-            window.addEventListener('resize', () => this.resizeCanvas(canvas));
-
-            this.simulation = new PmGpuNBodySimulation(canvas);
-            await this.simulation.init();
-
-            loading.style.display = 'none';
-            controls.style.display = 'block';
-
-            this.setupControls();
-            this.animate();
-
-        } catch (err) {
-            console.error('Failed to initialize:', err);
-            loading.style.display = 'none';
-            error.style.display = 'block';
-            document.getElementById('errorMessage').textContent = err.message || String(err);
-        }
-    }
-
-    resizeCanvas(canvas) {
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = rect.width * devicePixelRatio;
-        canvas.height = rect.height * devicePixelRatio;
-    }
-
-    setupControls() {
-        const particleCountSlider = document.getElementById('particleCount');
-        const gravitySlider = document.getElementById('gravity');
-        const timeScaleSlider = document.getElementById('timeScale');
-        const boundaryModeSelect = document.getElementById('boundaryMode');
-        const resetBtn = document.getElementById('resetBtn');
-
-        const particleCountValue = document.getElementById('particleCountValue');
-        const gravityValue = document.getElementById('gravityValue');
-        const timeScaleValue = document.getElementById('timeScaleValue');
-
-        // The simulation constructor defaults to a small particleCount so it
-        // starts up fast; sync it to whatever this page's slider markup
-        // declares as its starting value before the render loop begins.
-        this.simulation.setParticleCount(parseInt(particleCountSlider.value, 10));
-
-        particleCountSlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
-            particleCountValue.textContent = value;
-            this.simulation.setParticleCount(value);
-        });
-
-        gravitySlider.addEventListener('input', (e) => {
-            const value = parseFloat(e.target.value);
-            gravityValue.textContent = value.toFixed(1);
-            this.simulation.setGravityStrength(value);
-        });
-
-        // Time Scale is a log-scale slider (exponent in [-3, 3]) so a single
-        // control can usefully span 0.001x to 1000x.
-        timeScaleSlider.addEventListener('input', (e) => {
-            const exponent = parseFloat(e.target.value);
-            const scale = Math.pow(10, exponent);
-            timeScaleValue.textContent = formatTimeScale(scale);
-            this.simulation.setTimeScale(scale);
-        });
-
-        boundaryModeSelect.addEventListener('change', (e) => {
-            this.simulation.setBoundaryMode(e.target.value);
-        });
-
-        resetBtn.addEventListener('click', () => {
-            this.simulation.resetSimulation();
-        });
-    }
-
-    animate() {
-        const time = performance.now();
-
-        if (this.simulation) {
-            this.simulation.render(time);
-
-            document.getElementById('fps').textContent = this.simulation.fps;
-            document.getElementById('computeTime').textContent = this.simulation.computeTime.toFixed(3);
-            document.getElementById('renderTime').textContent = this.simulation.renderTime.toFixed(3);
-            document.getElementById('activeParticles').textContent = this.simulation.aliveCount;
-            const substepsEl = document.getElementById('substeps');
-            if (substepsEl) substepsEl.textContent = this.simulation.lastSubsteps;
-        }
-
-        this.animationId = requestAnimationFrame(() => this.animate());
-    }
-}
-
-export { App, PmGpuNBodySimulation };
-
-if (typeof document !== 'undefined') {
-    const app = new App();
-    app.init();
 }

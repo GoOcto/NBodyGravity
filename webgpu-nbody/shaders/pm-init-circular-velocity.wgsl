@@ -2,13 +2,19 @@
 // an empirically-derived circular-velocity formula (which would need to
 // guess at the disc's enclosed-mass profile), this shader computes the
 // exact tangential velocity needed for a circular orbit from the ACTUAL
-// simulated acceleration field — main-pm-gpu.js's initializeParticles()
+// simulated acceleration field — js/sim-pm-gpu.js's initializeParticles()
 // uploads particle positions with zero velocity, runs one field-solve
 // pass (CIC deposit -> FFT Poisson solve -> gradient) to populate
 // accelX/accelY for that initial distribution, then dispatches this
 // shader once to convert "radially-inward acceleration" into "circular
 // tangential velocity" (v = sqrt(r * |accel|), rotated 90° from the
 // radial direction) directly on the GPU, with no CPU readback roundtrip.
+// The result is scaled by sim.orbitalSpeedFactor (the shared "Initial
+// Orbital Speed" control, see common.js's discOrbitalSpeed/
+// DEFAULT_ORBITAL_SPEED used by the other two 2D algorithms) so all three
+// 2D algorithms expose the same live control even though only this one
+// derives its base speed from a real field solve rather than an analytic
+// formula.
 
 struct SimParams {
     forceMultiplier: f32,
@@ -22,7 +28,7 @@ struct SimParams {
     massFixedPointScale: f32,
 
     massVisualScale: f32,
-    _pad0: f32,
+    orbitalSpeedFactor: f32,
     _pad1: f32,
     _pad2: f32,
 }
@@ -60,7 +66,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ax = accelX[i] * sim.forceMultiplier;
     let ay = accelY[i] * sim.forceMultiplier;
     let accelMag = sqrt(ax * ax + ay * ay);
-    let speed = sqrt(r * accelMag);
+    let speed = sqrt(r * accelMag) * sim.orbitalSpeedFactor;
 
     // Tangent direction (-y/r, x/r) is the same counter-clockwise
     // convention as the disc's angular sampling.

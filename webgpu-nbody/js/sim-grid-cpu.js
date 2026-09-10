@@ -16,39 +16,44 @@
 // there is no 3D content and no camera — the quad is cover-fit directly to
 // the canvas each frame (see computeCoverQuadVertices).
 
+// Multi-resolution grid-based 2D N-body gravity simulation — CPU variant.
+//
+// Implements the algorithm described in ../2D-optimized.md:
+//   1. Bin particle mass into a high-resolution base grid ("particle-to-grid").
+//   2. Build a pyramid of coarser LOD grids by summing 2x2 blocks (mipmap-style).
+//   3. Spread mass outward on every LOD level with a separable 1D blur.
+//   4. Compute the gradient of each blurred field (central differences).
+//   5. Each particle samples the gradient from every LOD level and sums the
+//      contributions to approximate near + far gravitational pull, then
+//      integrates with symplectic Euler.
+//
+// Physics is 2D: all particles live in the XY plane (z is always 0). Physics
+// runs on the CPU (typed arrays, no WebGPU calls) so it can scale to tens of
+// thousands of particles. Rendering draws the mass-accumulation grid itself
+// as a color-mapped heatmap texture (rather than individual particles), so
+// there is no 3D content and no camera — the quad is cover-fit directly to
+// the canvas each frame (see computeCoverQuadVertices).
+//
+// Shares domain/tuning constants and helpers with sim-grid-gpu.js and
+// sim-pm-gpu.js via common.js so they can't silently drift apart; only the
+// truly algorithm-specific tuning (FORCE_SCALE, grid/LOD resolution, blur
+// kernel) stays local to this file.
+import {
+    initWebGPU, formatTimeScale, computeCoverQuadVertices, wrapCoordinate,
+    DOMAIN_HALF_SIZE, MASS_VISUAL_SCALE, DEFAULT_DAMPING, DEFAULT_RESTITUTION,
+    BOUNDARY_MODE_WRAP, BOUNDARY_MODE_BOUNCE, BOUNDARY_MODE_DELETE, DEFAULT_BOUNDARY_MODE,
+    DEFAULT_ORBITAL_SPEED, discOrbitalSpeed,
+} from './common.js';
+
 const MAX_PARTICLES = 1000000;
-const DOMAIN_HALF_SIZE = 50;
+export const PARTICLE_COUNT_RANGE = { min: 100, max: MAX_PARTICLES, step: 100 };
+export const DEFAULT_PARTICLE_COUNT = 250000;
 const BASE_GRID_SIZE = 1024; // must be a power of two
 const NUM_LOD_LEVELS = 5;   // 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16
 const BLUR_KERNEL_RADIUS = 3;
 const FORCE_SCALE = 0.02;    // overall tuning constant, see 2D-optimized.md
-const DAMPING = 0.999;
-const RESTITUTION = 1;
 const FIXED_DT = 0.016;
 
-// Boundary handling modes (see 2D-optimized.md discussion + follow-up request):
-//   'wrap'   - periodic boundaries: particles and the grid/blur wrap around.
-//   'bounce' - hard box: particles are clamped and bounce with restitution.
-//   'delete' - particles that leave the domain are culled (swap-removed).
-const BOUNDARY_MODE_WRAP = 'wrap';
-const BOUNDARY_MODE_BOUNCE = 'bounce';
-const BOUNDARY_MODE_DELETE = 'delete';
-const DEFAULT_BOUNDARY_MODE = BOUNDARY_MODE_BOUNCE;
-
-// Wraps a coordinate into [-DOMAIN_HALF_SIZE, DOMAIN_HALF_SIZE) for periodic
-// boundaries. Handles arbitrarily large/negative values (not just single
-// overshoots) via modulo arithmetic.
-function wrapCoordinate(v) {
-    const size = 2 * DOMAIN_HALF_SIZE;
-    let wrapped = (v + DOMAIN_HALF_SIZE) % size;
-    if (wrapped < 0) wrapped += size;
-    return wrapped - DOMAIN_HALF_SIZE;
-}
-
-// How much accumulated mass in a single base-grid cell counts as "full
-// brightness" (t = 1) in the heatmap. Tuned so a handful of overlapping
-// particles saturate towards white rather than requiring hundreds.
-const MASS_VISUAL_SCALE = 2.0;
 const COLOR_LUT_SIZE = 256;
 
 // Custom 1D blur kernel approximating gravitational falloff (1/(1+|r|)),
@@ -107,46 +112,7 @@ function buildColorLUT(size) {
 
 const COLOR_LUT = buildColorLUT(COLOR_LUT_SIZE);
 
-// Computes the 6 vertices (position.xy in NDC, uv.xy) of a full-canvas quad
-// that "cover-fits" the square (1:1) grid texture into a canvas of arbitrary
-// aspect ratio: the quad always fills the entire viewport with no
-// letterboxing, cropping whichever axis overhangs rather than stretching
-// the content (so the texture itself is never distorted).
-function computeCoverQuadVertices(canvasAspect) {
-    let uvHalfW, uvHalfH;
-    if (canvasAspect >= 1) {
-        // Wider than tall (or square): full texture width visible, crop top/bottom.
-        uvHalfW = 0.5;
-        uvHalfH = 0.5 / canvasAspect;
-    } else {
-        // Taller than wide: full texture height visible, crop left/right.
-        uvHalfW = 0.5 * canvasAspect;
-        uvHalfH = 0.5;
-    }
-
-    const u0 = 0.5 - uvHalfW, u1 = 0.5 + uvHalfW;
-    const v0 = 0.5 - uvHalfH, v1 = 0.5 + uvHalfH;
-
-    // Two triangles covering NDC [-1,1] x [-1,1], each vertex is (x, y, u, v).
-    return new Float32Array([
-        -1, -1, u0, v0,
-         1, -1, u1, v0,
-        -1,  1, u0, v1,
-         1, -1, u1, v0,
-         1,  1, u1, v1,
-        -1,  1, u0, v1,
-    ]);
-}
-
-// Formats a time-scale multiplier (0.001x .. 1000x) with roughly 3
-// significant figures, used by the log-scale Time Scale slider's label.
-function formatTimeScale(scale) {
-    if (!(scale > 0)) return '0x';
-    const digits = Math.max(0, Math.min(6, 2 - Math.floor(Math.log10(scale))));
-    return `${scale.toFixed(digits)}x`;
-}
-
-class GridNBodySimulation {
+export class GridNBodySimulation {
     constructor(canvas) {
         this.canvas = canvas;
         this.device = null;
@@ -156,7 +122,10 @@ class GridNBodySimulation {
         this.particleCount = 5;
         this.gravityStrength = 1.0;
         this.timeScale = 1.0;
+        this.damping = DEFAULT_DAMPING;
+        this.restitution = DEFAULT_RESTITUTION;
         this.boundaryMode = DEFAULT_BOUNDARY_MODE;
+        this.orbitalSpeed = DEFAULT_ORBITAL_SPEED;
 
         // Particle data (CPU-based, structure-of-arrays for performance at high N)
         this.posX = new Float32Array(MAX_PARTICLES);
@@ -199,24 +168,9 @@ class GridNBodySimulation {
 
     async init() {
         // Initialize WebGPU (render only)
-        if (!navigator.gpu) {
-            throw new Error('WebGPU is not supported');
-        }
-
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) {
-            throw new Error('No appropriate GPUAdapter found');
-        }
-
-        this.device = await adapter.requestDevice();
-
-        this.context = this.canvas.getContext('webgpu');
-        const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-
-        this.context.configure({
-            device: this.device,
-            format: canvasFormat,
-        });
+        const { device, context } = await initWebGPU(this.canvas);
+        this.device = device;
+        this.context = context;
 
         this.initializeParticles();
         await this.initResources();
@@ -248,7 +202,11 @@ class GridNBodySimulation {
     initializeParticles() {
         // Seed particles in a 2D disc (annulus, avoiding the exact center to
         // sidestep a degenerate zero-radius velocity sample) with circular
-        // orbital velocity, similar in spirit to a flat galaxy disc.
+        // orbital velocity, similar in spirit to a flat galaxy disc. Uses
+        // the shared discOrbitalSpeed helper (see common.js) so this always
+        // follows a Math.sqrt(.../radius) law — nearer particles orbit
+        // faster — and starts at the same speed as the other 2D algorithms
+        // for the same Particle Count/Gravity Strength/Orbital Speed.
         const minRadius = 0.2;
         const maxRadius = DOMAIN_HALF_SIZE * 0.6;
 
@@ -260,8 +218,7 @@ class GridNBodySimulation {
             this.posY[i] = radius * Math.sin(theta);
             this.mass[i] = 0.6 + Math.random() * 0.8;
 
-            const enclosedMassEstimate = this.particleCount * 0.6 * (radius / maxRadius);
-            const speed = Math.sqrt(this.gravityStrength * FORCE_SCALE * enclosedMassEstimate / radius) * 0.3;
+            const speed = discOrbitalSpeed(radius, this.particleCount, this.gravityStrength, this.orbitalSpeed);
 
             this.velX[i] = -speed * Math.sin(theta);
             this.velY[i] = speed * Math.cos(theta);
@@ -465,8 +422,8 @@ class GridNBodySimulation {
             accX *= this.gravityStrength * FORCE_SCALE;
             accY *= this.gravityStrength * FORCE_SCALE;
 
-            let vx = (this.velX[i] + accX * dt) * DAMPING;
-            let vy = (this.velY[i] + accY * dt) * DAMPING;
+            let vx = (this.velX[i] + accX * dt) * this.damping;
+            let vy = (this.velY[i] + accY * dt) * this.damping;
 
             let nx = px + vx * dt;
             let ny = py + vy * dt;
@@ -499,11 +456,11 @@ class GridNBodySimulation {
                 // Clamping (bounce): hard box, invert velocity with damping.
                 if (Math.abs(nx) > DOMAIN_HALF_SIZE) {
                     nx = Math.sign(nx) * DOMAIN_HALF_SIZE;
-                    vx *= -RESTITUTION;
+                    vx *= -this.restitution;
                 }
                 if (Math.abs(ny) > DOMAIN_HALF_SIZE) {
                     ny = Math.sign(ny) * DOMAIN_HALF_SIZE;
-                    vy *= -RESTITUTION;
+                    vy *= -this.restitution;
                 }
             }
 
@@ -686,6 +643,18 @@ class GridNBodySimulation {
 
     setTimeScale(scale) { this.timeScale = scale; }
 
+    setDamping(damping) { this.damping = damping; }
+
+    setRestitution(restitution) { this.restitution = restitution; }
+
+    // Orbital Speed is an initial condition, not a live per-frame
+    // parameter, so (like setBoundaryMode) changing it immediately
+    // regenerates the disc rather than waiting for a manual Reset.
+    setOrbitalSpeed(orbitalSpeed) {
+        this.orbitalSpeed = orbitalSpeed;
+        this.initializeParticles();
+    }
+
     setBoundaryMode(mode) {
         // Mode switches reset the simulation so 'delete' mode's culled
         // particle count (aliveCount) doesn't linger into another mode.
@@ -696,118 +665,3 @@ class GridNBodySimulation {
     resetSimulation() { this.initializeParticles(); }
 }
 
-// App wiring for index.html controls
-class App {
-    constructor() {
-        this.simulation = null;
-        this.animationId = null;
-    }
-
-    async init() {
-        const canvas = document.getElementById('canvas');
-        const loading = document.getElementById('loading');
-        const error = document.getElementById('error');
-        const controls = document.getElementById('controls');
-
-        try {
-            this.resizeCanvas(canvas);
-            window.addEventListener('resize', () => this.resizeCanvas(canvas));
-
-            this.simulation = new GridNBodySimulation(canvas);
-            await this.simulation.init();
-
-            loading.style.display = 'none';
-            controls.style.display = 'block';
-
-            this.setupControls();
-            this.animate();
-
-        } catch (err) {
-            console.error('Failed to initialize:', err);
-            loading.style.display = 'none';
-            error.style.display = 'block';
-            document.getElementById('errorMessage').textContent = err.message || String(err);
-        }
-    }
-
-    resizeCanvas(canvas) {
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = rect.width * devicePixelRatio;
-        canvas.height = rect.height * devicePixelRatio;
-        // No camera aspect to update — render() reads canvas.width/height
-        // directly every frame to cover-fit the heatmap quad.
-    }
-
-    setupControls() {
-        const particleCountSlider = document.getElementById('particleCount');
-        const gravitySlider = document.getElementById('gravity');
-        const timeScaleSlider = document.getElementById('timeScale');
-        const boundaryModeSelect = document.getElementById('boundaryMode');
-        const resetBtn = document.getElementById('resetBtn');
-
-        const particleCountValue = document.getElementById('particleCountValue');
-        const gravityValue = document.getElementById('gravityValue');
-        const timeScaleValue = document.getElementById('timeScaleValue');
-
-        // The simulation constructor defaults to a small particleCount so it
-        // starts up fast even if this script is embedded elsewhere; sync it
-        // to whatever this page's slider markup declares as its starting
-        // value before the render loop begins.
-        this.simulation.setParticleCount(parseInt(particleCountSlider.value, 10));
-
-        // index-optimized.html already sets the slider range appropriate for
-        // this grid-based solver, so no overrides here.
-        particleCountSlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
-            particleCountValue.textContent = value;
-            this.simulation.setParticleCount(value);
-        });
-
-        gravitySlider.addEventListener('input', (e) => {
-            const value = parseFloat(e.target.value);
-            gravityValue.textContent = value.toFixed(1);
-            this.simulation.setGravityStrength(value);
-        });
-
-        // Time Scale is a log-scale slider (exponent in [-3, 3]) so a single
-        // control can usefully span 0.001x to 1000x.
-        timeScaleSlider.addEventListener('input', (e) => {
-            const exponent = parseFloat(e.target.value);
-            const scale = Math.pow(10, exponent);
-            timeScaleValue.textContent = formatTimeScale(scale);
-            this.simulation.setTimeScale(scale);
-        });
-
-        boundaryModeSelect.addEventListener('change', (e) => {
-            this.simulation.setBoundaryMode(e.target.value);
-        });
-
-        resetBtn.addEventListener('click', () => {
-            this.simulation.resetSimulation();
-        });
-    }
-
-    animate() {
-        const time = performance.now();
-
-        if (this.simulation) {
-            this.simulation.render(time);
-
-            document.getElementById('fps').textContent = this.simulation.fps;
-            document.getElementById('computeTime').textContent = this.simulation.computeTime.toFixed(3);
-            document.getElementById('renderTime').textContent = this.simulation.renderTime.toFixed(3);
-            document.getElementById('activeParticles').textContent = this.simulation.aliveCount;
-        }
-
-        this.animationId = requestAnimationFrame(() => this.animate());
-    }
-}
-
-export { App, GridNBodySimulation };
-
-// Start the application (guarded so this module can be imported in Node,
-// e.g. for testing the physics, without a DOM/browser environment).
-if (typeof document !== 'undefined') {
-    const app = new App();
-    app.init();
-}

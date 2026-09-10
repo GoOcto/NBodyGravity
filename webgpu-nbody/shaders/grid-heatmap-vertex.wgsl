@@ -2,7 +2,7 @@
 // Draws a full-canvas quad directly in clip space (no camera/projection —
 // there is no 3D content, just a flat color-mapped texture). The quad's
 // vertex positions/UVs are precomputed on the CPU each frame
-// (computeCoverQuadVertices in main-optimized.js) to "cover-fit" the square
+// (computeCoverQuadVertices in js/common.js) to "cover-fit" the square
 // grid texture into the canvas: the texture always fills the entire
 // viewport, cropping whichever axis overhangs rather than stretching it.
 

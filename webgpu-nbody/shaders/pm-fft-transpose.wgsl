@@ -2,7 +2,7 @@
 // turn the "row FFT" primitive (pm-fft-bitreverse.wgsl + repeated
 // pm-fft-butterfly.wgsl dispatches) into a full 2D FFT: rowFFT, transpose,
 // rowFFT, transpose. Always reads from one fixed buffer and writes to the
-// other (see main-pm-gpu.js's fixed buffer-role comments), so the same
+// other (see js/sim-pm-gpu.js's fixed buffer-role comments), so the same
 // bind group is reused for every transpose call in the pipeline.
 
 struct FftDimParams {

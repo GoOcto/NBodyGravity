@@ -9,15 +9,28 @@ A modern, high-performance N-body gravity simulation using WebGPU compute shader
 
 ## 🚀 Features
 
-- **Four live 2D/GPU demos**, reachable from any page's "Demo" dropdown:
-  Direct O(N²) (CPU), FMM Octree (CPU/GPU), Grid-Based blur approximation
-  (CPU and GPU compute), and a GPU **Particle-Mesh FFT Poisson solver**
-  (`index-pm-gpu.html`)
-- **Two live physics backends** (Direct/FMM demos): Switch between the existing CPU direct O(N²) solver and a GPU FMM-style octree solver
-- **State-preserving switching**: GPU state is read back only before entering CPU mode or resizing the particle set; CPU state is uploaded before entering GPU mode
-- **Real-time N-Body Physics**: Direct interactions remain available for near-field cells while distant cells use octree multipoles
-- **Interactive Controls**: Adjust gravity strength, particle count, time scale, and damping in real-time
-- **Orbital Camera**: Mouse/touch controls for 360° viewing
+- **Two pages, one shared control-panel flow**: `index.html` (3D) and
+  `index-2d.html` (2D) each expose an in-page dropdown to switch physics
+  backend/algorithm without navigating away — a "Demo" dropdown still
+  switches between the two pages themselves.
+  - **`index.html` (3D)**: `CPU direct (O(N²))` vs. `GPU FMM octree`,
+    switched live via a state-preserving backend swap (GPU state is read
+    back only before entering CPU mode or resizing the particle set; CPU
+    state is uploaded before entering GPU mode).
+  - **`index-2d.html` (2D)**: `Grid-Based — CPU`, `Grid-Based — GPU
+    Compute` (multi-resolution grid + separable-blur approximation), and
+    `Particle-Mesh — GPU FFT Poisson` (an exact 2D field solve). Switching
+    algorithms here tears down and reconstructs the simulation object
+    (the three algorithms' internal GPU pipelines are too different to
+    share live state) but carries over every current control-panel value.
+- **Real-time N-Body Physics**: Direct interactions remain available for
+  near-field cells while distant cells use octree multipoles (3D/GPU FMM)
+  or grid/FFT-based field solves (2D)
+- **Interactive Controls**: particle count, gravity strength, time scale,
+  damping, restitution (2D), boundary handling (2D), and GPU FMM opening
+  angle (theta) / softening (3D) — all live, all shared via `js/common.js`
+  so the same setting behaves identically across algorithms that support it
+- **Orbital Camera** (3D only): Mouse/touch controls for 360° viewing
 - **Cross-Platform**: Runs in any WebGPU-compatible browser
 - **High Performance**: GPU-accelerated compute shaders for maximum efficiency
 
@@ -61,23 +74,83 @@ Then open: http://localhost:8080
 
 ## 🎮 Controls
 
+### `index.html` (3D)
 - **Mouse Drag**: Orbit around the simulation
 - **Mouse Wheel**: Zoom in/out
 - **Touch**: Mobile-friendly orbital controls
-- **Particle Count**: Adjust the number of particles (100-4,000)
+- **Particle Count**: 100–40,000
 - **Gravity Strength**: Control gravitational force intensity
 - **Time Scale**: Speed up or slow down the simulation
 - **Damping**: Add velocity damping to stabilize the system
-- **Physics backend**: Choose `CPU direct (O(N²))` or `GPU FMM octree` while running
+- **Physics backend**: `CPU direct (O(N²))` or `GPU FMM octree`, switchable live
+- **Octree Opening Angle (θ) / Softening** (GPU FMM only, disabled in CPU
+  mode): live per-frame tuning of the FMM's accuracy/performance trade-off
+  and force softening — the octree's fixed depth (4 levels) is not exposed
+  since changing it requires rewriting the traversal shader
 - **Reset**: Reinitialize particle positions and velocities
 
 The backend selector does not reset particles. If GPU initialization or a mode
 transition fails, the current backend remains active and the error is shown in
 the status line; there is no silent fallback.
 
+### `index-2d.html` (2D)
+- **Algorithm**: `Grid-Based — CPU`, `Grid-Based — GPU Compute`, or
+  `Particle-Mesh — GPU FFT Poisson` — switching reconstructs the simulation
+  (see Features above) but preserves every other control's current value
+- **Particle Count**: up to 1,000,000 (CPU grid) or 4,000,000 (either GPU algorithm)
+- **Gravity Strength**, **Time Scale** (log-scale slider, 0.001x–1000x)
+- **Damping**: has no effect in `Particle-Mesh` mode (its integrator has no
+  damping term by design) — the control is disabled with a note in that mode
+- **Restitution**: bounce elasticity at domain boundaries
+- **Initial Orbital Speed**: scales the circular velocity particles are
+  seeded with (0 = no spin, radial collapse; 1 = default). Always follows a
+  `Math.sqrt(.../radius)` law so nearer particles orbit faster — the same
+  shape used by `index.html`'s 3D demo — and starts every algorithm at the
+  same speed for the same Particle Count/Gravity Strength, fixing a
+  previous bug where the three algorithms started at different, radius-
+  independent speeds. Changing it immediately regenerates the disc.
+- **Boundary Handling**: `Clamping (Bounce)`, `Periodic (Wrap)`, or `Deletion (Cull)`
+- **Reset**: Reinitialize particle positions and velocities
+
+Both pages share a "Demo" dropdown to jump between the 3D and 2D pages.
+
 ## 🏗️ Architecture
 
-### Compute Shaders (WGSL)
+### File Layout
+```
+webgpu-nbody/
+├── index.html          # 3D page (CPU direct / GPU FMM octree)
+├── index-2d.html        # 2D page (Grid CPU / Grid GPU / Particle-Mesh GPU)
+├── styles.css
+├── js/
+│   ├── common.js         # shared constants + helpers (WebGPU init, dispatch
+│   │                      # sizing, shader loading, boundary-mode constants,
+│   │                      # control-panel binding helpers) used by every
+│   │                      # simulation/app file below
+│   ├── camera.js          # orbital camera controller (3D only)
+│   ├── gl-matrix.js       # minimal mat4/vec3 helpers (3D only)
+│   ├── sim-3d.js          # SimpleNBodySimulation: CPU direct O(N²) + GPU FMM
+│   │                      # octree, with a live, state-preserving mode switch
+│   ├── sim-grid-cpu.js    # GridNBodySimulation: CPU multi-resolution grid + blur
+│   ├── sim-grid-gpu.js    # GpuGridNBodySimulation: same algorithm, GPU compute
+│   ├── sim-pm-gpu.js      # PmGpuNBodySimulation: GPU particle-mesh FFT Poisson solver
+│   ├── app-3d.js          # App shell for index.html (controls, RAF loop, stats)
+│   └── app-2d.js          # App shell for index-2d.html (controls, RAF loop,
+│                          # stats, and the tear-down/recreate algorithm switch)
+└── shaders/               # every WGSL shader lives directly here (flattened,
+                            # single directory, no unused/orphaned files)
+```
+
+Each `sim-*.js` file owns a fully self-contained simulation class (particle
+state, WebGPU pipelines/bind groups, integration, rendering) so the
+algorithm-specific logic — where these demos genuinely diverge — stays
+isolated to one file and one shader set per algorithm, while anything that
+*should* be identical across algorithms (domain size, mass scaling,
+boundary-mode codes, damping/restitution defaults, WebGPU bootstrap, shader
+loading, control-panel wiring helpers) is centralized in `js/common.js` and
+can no longer silently drift apart between files.
+
+### Compute Shaders (WGSL) — 3D (FMM octree)
 - `octree-leaf.wgsl`: Assigns particles to fixed-depth leaf cells on the GPU
 - `octree-leaf-multipole.wgsl`: Builds leaf mass/center-of-mass multipoles
 - `octree-aggregate.wgsl`: Reduces leaf multipoles through the hierarchy
@@ -85,14 +158,16 @@ the status line; there is no silent fallback.
 - `fmm-integrate-compute.wgsl`: Updates particle positions and velocities
 - `octree-clear.wgsl`: Clears per-frame multipole accumulators
 
-### Render Pipeline (WGSL)
+### Render Pipeline (WGSL) — 3D
 - `particle-vertex-quad.wgsl`: Transforms particle positions to screen space
 - `particle-fragment-quad.wgsl`: Renders particles with color-coded velocities
 
 ### JavaScript Classes
-- `SimpleNBodySimulation`: CPU solver, GPU compute passes, resource management, and state synchronization
-- `CameraController`: Orbital camera with smooth mouse/touch controls
-- `App`: Application lifecycle and UI management
+- `SimpleNBodySimulation` (`js/sim-3d.js`): CPU solver, GPU compute passes, resource management, and state synchronization
+- `GridNBodySimulation` / `GpuGridNBodySimulation` (`js/sim-grid-cpu.js` / `js/sim-grid-gpu.js`): multi-resolution grid + separable-blur 2D approximation, CPU and GPU compute variants
+- `PmGpuNBodySimulation` (`js/sim-pm-gpu.js`): 2D particle-mesh FFT Poisson solver (see below)
+- `CameraController` (`js/camera.js`): Orbital camera with smooth mouse/touch controls (3D only)
+- `App` (`js/app-3d.js`, `js/app-2d.js`): per-page application lifecycle, control-panel wiring, and UI management
 
 ## 🔧 Technical Details
 
@@ -126,13 +201,14 @@ only when switching from GPU to CPU or resizing the particle set.
 - Uniform buffers for simulation parameters
 - Bind groups for resource management
 
-## 🧮 Particle-Mesh GPU Demo (`index-pm-gpu.html` / `main-pm-gpu.js`)
+## 🧮 Particle-Mesh GPU Demo (`index-2d.html`'s "Particle-Mesh — GPU FFT Poisson" algorithm, `js/sim-pm-gpu.js`)
 
-Alongside the grid-based blur approximation (`index-optimized-gpu.html` /
-`main-optimized-gpu.js`), the repo also has a physically-grounded
-**Particle-Mesh (PM)** GPU demo. Where the blur-based demo approximates
-gravity with a hand-tuned separable-blur kernel across a multi-resolution
-grid hierarchy, the PM demo actually solves the field equation:
+Alongside the grid-based blur approximation (`index-2d.html`'s "Grid-Based —
+GPU Compute" algorithm, `js/sim-grid-gpu.js`), the repo also has a
+physically-grounded **Particle-Mesh (PM)** GPU algorithm. Where the
+blur-based algorithm approximates gravity with a hand-tuned separable-blur
+kernel across a multi-resolution grid hierarchy, the PM algorithm actually
+solves the field equation:
 
 1. **Cloud-in-Cell (CIC) mass deposit** — each particle bilinearly spreads
    its mass across its 4 surrounding grid cells (`pm-mass-scatter-cic.wgsl`),
@@ -181,7 +257,7 @@ guessing at the disc's enclosed-mass profile.
 ## 🎨 Customization
 
 ### Modify Physics Parameters
-Edit the initial values in `main-stable.js`:
+Edit the defaults in the constructor of the relevant `js/sim-*.js` class (e.g. `js/sim-3d.js`'s `SimpleNBodySimulation`, shared constants live in `js/common.js`):
 ```javascript
 this.gravityStrength = 1.0;  // Gravitational constant
 this.damping = 0.999;        // Velocity damping factor
@@ -189,14 +265,14 @@ this.timeScale = 1.0;        // Simulation speed multiplier
 ```
 
 ### Change Visual Appearance
-Modify `particle-fragment.wgsl` to adjust:
+Modify `shaders/particle-fragment-quad.wgsl` (3D) or `shaders/colorize.wgsl` (2D) to adjust:
 - Particle colors
 - Size scaling
 - Transparency effects
 - Glow effects
 
 ### Add New Initial Conditions
-Edit `initializeParticles()` in `main-stable.js` to create:
+Edit `initializeParticles()` in the relevant `js/sim-*.js` file to create:
 - Galaxy formations
 - Binary systems  
 - Clustered configurations

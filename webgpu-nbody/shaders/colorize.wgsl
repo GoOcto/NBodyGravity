@@ -2,7 +2,7 @@
 // storage texture on the GPU — no CPU readback/upload roundtrip. The color
 // ramp (black -> dark blue -> red -> orange -> white) and the exponential
 // saturating brightness curve must match buildColorLUT()/MASS_VISUAL_SCALE
-// in main-optimized-gpu.js.
+// in js/sim-grid-gpu.js.
 
 struct SimParams {
     forceMultiplier: f32,

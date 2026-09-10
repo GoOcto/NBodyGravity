@@ -1,9 +1,9 @@
 // Multi-resolution grid-based 2D N-body gravity simulation — GPU compute
-// variant. Implements the same algorithm as main-optimized.js (see
+// variant. Implements the same algorithm as sim-grid-cpu.js (see
 // ../2D-optimized.md) but runs the majority of the per-frame work as WebGPU
 // compute shaders instead of CPU JavaScript:
 //   1. Mass scatter (2D-optimized.md Step 2.1) — atomic fixed-point add into
-//      the base grid (shaders/gpu/mass-scatter.wgsl), then resolved to f32
+//      the base grid (shaders/mass-scatter.wgsl), then resolved to f32
 //      (mass-resolve.wgsl). WGSL has no atomic<f32>, hence the fixed-point
 //      trick (see MASS_FIXED_POINT_SCALE).
 //   2. LOD pyramid (Step 2.2) — lod-downsample.wgsl, one dispatch per level.
@@ -30,69 +30,27 @@
 // the scatter/accumulate/integrate shaders — see integrate.wgsl for
 // details. The "Active Particles" stat is refreshed via a small,
 // non-blocking periodic GPU→CPU readback of a single atomic counter.
+//
+// Shares domain/tuning constants and helpers with sim-grid-cpu.js and
+// sim-pm-gpu.js via common.js so they can't silently drift apart; only the
+// truly algorithm-specific tuning (FORCE_SCALE, grid/LOD resolution) stays
+// local to this file.
+import {
+    initWebGPU, dispatchCount, formatTimeScale, computeCoverQuadVertices,
+    DOMAIN_HALF_SIZE, MASS_VISUAL_SCALE, MASS_FIXED_POINT_SCALE,
+    DEFAULT_DAMPING, DEFAULT_RESTITUTION, BOUNDARY_MODE_CODES, DEFAULT_BOUNDARY_MODE,
+    ALIVE_READBACK_INTERVAL_FRAMES, DEFAULT_ORBITAL_SPEED, discOrbitalSpeed,
+} from './common.js';
 
 const MAX_PARTICLES = 4000000;
-const DOMAIN_HALF_SIZE = 50;
+export const PARTICLE_COUNT_RANGE = { min: 0, max: MAX_PARTICLES, step: 100000 };
+export const DEFAULT_PARTICLE_COUNT = 1000000;
 const BASE_GRID_SIZE = 1024; // must be a power of two
 const NUM_LOD_LEVELS = 9;    // 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16 -> 8 -> 4
 const FORCE_SCALE = 0.002;     // overall tuning constant, see 2D-optimized.md
-const DAMPING = 0.999;
-const RESTITUTION = 1;
 const FIXED_DT = 0.016;
-const MASS_VISUAL_SCALE = 2.0;
-// Fixed-point scale for the atomic mass-scatter pass (WGSL has no
-// atomic<f32>). Must be large enough for sub-integer mass precision but
-// small enough that heavily-populated cells don't overflow i32.
-const MASS_FIXED_POINT_SCALE = 65536;
-const WORKGROUP_SIZE = 64;
 
-const BOUNDARY_MODE_CODES = { bounce: 0, wrap: 1, delete: 2 };
-const DEFAULT_BOUNDARY_MODE = 'bounce';
-
-const ALIVE_READBACK_INTERVAL_FRAMES = 20;
-
-function dispatchCount(n) {
-    return Math.max(1, Math.ceil(n / WORKGROUP_SIZE));
-}
-
-// Computes the 6 vertices (position.xy in NDC, uv.xy) of a full-canvas quad
-// that "cover-fits" the square (1:1) grid texture into a canvas of arbitrary
-// aspect ratio: the quad always fills the entire viewport with no
-// letterboxing, cropping whichever axis overhangs rather than stretching
-// the content (so the texture itself is never distorted). Identical to the
-// CPU version's helper of the same name.
-function computeCoverQuadVertices(canvasAspect) {
-    let uvHalfW, uvHalfH;
-    if (canvasAspect >= 1) {
-        uvHalfW = 0.5;
-        uvHalfH = 0.5 / canvasAspect;
-    } else {
-        uvHalfW = 0.5 * canvasAspect;
-        uvHalfH = 0.5;
-    }
-
-    const u0 = 0.5 - uvHalfW, u1 = 0.5 + uvHalfW;
-    const v0 = 0.5 - uvHalfH, v1 = 0.5 + uvHalfH;
-
-    return new Float32Array([
-        -1, -1, u0, v0,
-         1, -1, u1, v0,
-        -1,  1, u0, v1,
-         1, -1, u1, v0,
-         1,  1, u1, v1,
-        -1,  1, u0, v1,
-    ]);
-}
-
-// Formats a time-scale multiplier (0.001x .. 1000x) with roughly 3
-// significant figures, used by the log-scale Time Scale slider's label.
-function formatTimeScale(scale) {
-    if (!(scale > 0)) return '0x';
-    const digits = Math.max(0, Math.min(6, 2 - Math.floor(Math.log10(scale))));
-    return `${scale.toFixed(digits)}x`;
-}
-
-class GpuGridNBodySimulation {
+export class GpuGridNBodySimulation {
     constructor(canvas) {
         this.canvas = canvas;
         this.device = null;
@@ -101,7 +59,10 @@ class GpuGridNBodySimulation {
         this.particleCount = 5;
         this.gravityStrength = 1.0;
         this.timeScale = 1.0;
+        this.damping = DEFAULT_DAMPING;
+        this.restitution = DEFAULT_RESTITUTION;
         this.boundaryMode = DEFAULT_BOUNDARY_MODE;
+        this.orbitalSpeed = DEFAULT_ORBITAL_SPEED;
 
         // Last known alive count, refreshed periodically via an async GPU
         // readback (see maybeReadbackAliveCount). Optimistically set to
@@ -128,24 +89,9 @@ class GpuGridNBodySimulation {
     }
 
     async init() {
-        if (!navigator.gpu) {
-            throw new Error('WebGPU is not supported');
-        }
-
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) {
-            throw new Error('No appropriate GPUAdapter found');
-        }
-
-        this.device = await adapter.requestDevice();
-
-        this.context = this.canvas.getContext('webgpu');
-        const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-
-        this.context.configure({
-            device: this.device,
-            format: canvasFormat,
-        });
+        const { device, context } = await initWebGPU(this.canvas);
+        this.device = device;
+        this.context = context;
 
         this.createBuffers();
         this.writeLevelParams();
@@ -238,10 +184,10 @@ class GpuGridNBodySimulation {
         const f32 = new Float32Array(data);
         const u32 = new Uint32Array(data);
         f32[0] = this.gravityStrength * FORCE_SCALE; // forceMultiplier
-        f32[1] = DAMPING;
+        f32[1] = this.damping;
         f32[2] = FIXED_DT * this.timeScale;
         f32[3] = DOMAIN_HALF_SIZE;
-        f32[4] = RESTITUTION;
+        f32[4] = this.restitution;
         u32[5] = BOUNDARY_MODE_CODES[this.boundaryMode];
         u32[6] = this.particleCount;
         f32[7] = MASS_FIXED_POINT_SCALE;
@@ -261,16 +207,16 @@ class GpuGridNBodySimulation {
             blurHSrc, blurVSrc, gradientSrc, accumSrc, integrateSrc, colorizeSrc,
             heatmapVertexSrc, heatmapFragmentSrc,
         ] = await Promise.all([
-            this.loadShader('./shaders/gpu/mass-clear.wgsl'),
-            this.loadShader('./shaders/gpu/mass-scatter.wgsl'),
-            this.loadShader('./shaders/gpu/mass-resolve.wgsl'),
-            this.loadShader('./shaders/gpu/lod-downsample.wgsl'),
-            this.loadShader('./shaders/gpu/blur-horizontal.wgsl'),
-            this.loadShader('./shaders/gpu/blur-vertical.wgsl'),
-            this.loadShader('./shaders/gpu/gradient.wgsl'),
-            this.loadShader('./shaders/gpu/accumulate-gradient.wgsl'),
-            this.loadShader('./shaders/gpu/integrate.wgsl'),
-            this.loadShader('./shaders/gpu/colorize.wgsl'),
+            this.loadShader('./shaders/mass-clear.wgsl'),
+            this.loadShader('./shaders/mass-scatter.wgsl'),
+            this.loadShader('./shaders/mass-resolve.wgsl'),
+            this.loadShader('./shaders/lod-downsample.wgsl'),
+            this.loadShader('./shaders/blur-horizontal.wgsl'),
+            this.loadShader('./shaders/blur-vertical.wgsl'),
+            this.loadShader('./shaders/gradient.wgsl'),
+            this.loadShader('./shaders/accumulate-gradient.wgsl'),
+            this.loadShader('./shaders/integrate.wgsl'),
+            this.loadShader('./shaders/colorize.wgsl'),
             this.loadShader('./shaders/grid-heatmap-vertex.wgsl'),
             this.loadShader('./shaders/grid-heatmap-fragment.wgsl'),
         ]);
@@ -444,7 +390,7 @@ class GpuGridNBodySimulation {
     // ---- Particle initialization / parameter updates -----------------------
 
     // Generates initial particle state on the CPU (same disc distribution as
-    // main-optimized.js) and uploads it once. This is the only time particle
+    // sim-grid-cpu.js) and uploads it once. This is the only time particle
     // data crosses the CPU/GPU boundary in bulk; every subsequent frame it
     // stays resident in GPU buffers.
     initializeParticles() {
@@ -467,8 +413,7 @@ class GpuGridNBodySimulation {
             posY[i] = radius * Math.sin(theta);
             mass[i] = 0.6 + Math.random() * 0.8;
 
-            const enclosedMassEstimate = n * 0.6 * (radius / maxRadius);
-            const speed = Math.sqrt(this.gravityStrength * FORCE_SCALE * enclosedMassEstimate / radius) * 0.3;
+            const speed = discOrbitalSpeed(radius, n, this.gravityStrength, this.orbitalSpeed);
 
             velX[i] = -speed * Math.sin(theta);
             velY[i] =  speed * Math.cos(theta);
@@ -494,6 +439,18 @@ class GpuGridNBodySimulation {
     setGravityStrength(strength) { this.gravityStrength = strength; }
 
     setTimeScale(scale) { this.timeScale = scale; }
+
+    setDamping(damping) { this.damping = damping; }
+
+    setRestitution(restitution) { this.restitution = restitution; }
+
+    // Orbital Speed is an initial condition, not a live per-frame
+    // parameter, so (like setBoundaryMode) changing it immediately
+    // regenerates the disc rather than waiting for a manual Reset.
+    setOrbitalSpeed(orbitalSpeed) {
+        this.orbitalSpeed = orbitalSpeed;
+        this.initializeParticles();
+    }
 
     setBoundaryMode(mode) {
         this.boundaryMode = mode;
@@ -647,115 +604,4 @@ class GpuGridNBodySimulation {
             this.lastTime = time;
         }
     }
-}
-
-// App wiring for index-optimized-gpu.html controls (same DOM ids as the CPU
-// version's index.html so both pages/scripts are interchangeable).
-class App {
-    constructor() {
-        this.simulation = null;
-        this.animationId = null;
-    }
-
-    async init() {
-        const canvas = document.getElementById('canvas');
-        const loading = document.getElementById('loading');
-        const error = document.getElementById('error');
-        const controls = document.getElementById('controls');
-
-        try {
-            this.resizeCanvas(canvas);
-            window.addEventListener('resize', () => this.resizeCanvas(canvas));
-
-            this.simulation = new GpuGridNBodySimulation(canvas);
-            await this.simulation.init();
-
-            loading.style.display = 'none';
-            controls.style.display = 'block';
-
-            this.setupControls();
-            this.animate();
-
-        } catch (err) {
-            console.error('Failed to initialize:', err);
-            loading.style.display = 'none';
-            error.style.display = 'block';
-            document.getElementById('errorMessage').textContent = err.message || String(err);
-        }
-    }
-
-    resizeCanvas(canvas) {
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = rect.width * devicePixelRatio;
-        canvas.height = rect.height * devicePixelRatio;
-    }
-
-    setupControls() {
-        const particleCountSlider = document.getElementById('particleCount');
-        const gravitySlider = document.getElementById('gravity');
-        const timeScaleSlider = document.getElementById('timeScale');
-        const boundaryModeSelect = document.getElementById('boundaryMode');
-        const resetBtn = document.getElementById('resetBtn');
-
-        const particleCountValue = document.getElementById('particleCountValue');
-        const gravityValue = document.getElementById('gravityValue');
-        const timeScaleValue = document.getElementById('timeScaleValue');
-
-        // The simulation constructor defaults to a small particleCount so it
-        // starts up fast even if this script is embedded elsewhere; sync it
-        // to whatever this page's slider markup declares as its starting
-        // value before the render loop begins.
-        this.simulation.setParticleCount(parseInt(particleCountSlider.value, 10));
-
-        particleCountSlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
-            particleCountValue.textContent = value;
-            this.simulation.setParticleCount(value);
-        });
-
-        gravitySlider.addEventListener('input', (e) => {
-            const value = parseFloat(e.target.value);
-            gravityValue.textContent = value.toFixed(1);
-            this.simulation.setGravityStrength(value);
-        });
-
-        // Time Scale is a log-scale slider (exponent in [-3, 3]) so a single
-        // control can usefully span 0.001x to 1000x.
-        timeScaleSlider.addEventListener('input', (e) => {
-            const exponent = parseFloat(e.target.value);
-            const scale = Math.pow(10, exponent);
-            timeScaleValue.textContent = formatTimeScale(scale);
-            this.simulation.setTimeScale(scale);
-        });
-
-        boundaryModeSelect.addEventListener('change', (e) => {
-            this.simulation.setBoundaryMode(e.target.value);
-        });
-
-        resetBtn.addEventListener('click', () => {
-            this.simulation.resetSimulation();
-        });
-    }
-
-    animate() {
-        const time = performance.now();
-
-        if (this.simulation) {
-            this.simulation.render(time);
-
-            document.getElementById('fps').textContent = this.simulation.fps;
-            document.getElementById('computeTime').textContent = this.simulation.computeTime.toFixed(3);
-            document.getElementById('renderTime').textContent = this.simulation.renderTime.toFixed(3);
-            document.getElementById('activeParticles').textContent = this.simulation.aliveCount;
-        }
-
-        this.animationId = requestAnimationFrame(() => this.animate());
-    }
-}
-
-export { App, GpuGridNBodySimulation };
-
-if (typeof document !== 'undefined') {
-    const app = new App();
-    app.init();
 }

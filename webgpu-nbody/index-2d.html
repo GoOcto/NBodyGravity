@@ -4,13 +4,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebGPU N-Body Gravity Simulation (Particle-Mesh FFT)</title>
+    <title>WebGPU N-Body Gravity Simulation 2D</title>
 	<link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
     <div id="loading" class="loading">
-        Initializing WebGPU N-Body Simulation (Particle-Mesh FFT)...
+        Initializing WebGPU N-Body Simulation...
     </div>
 
     <div id="error" class="error" style="display: none;">
@@ -28,17 +28,25 @@
     <canvas id="canvas"></canvas>
 
     <div id="controls" class="controls" style="display: none;">
-        <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation (Particle-Mesh FFT) 2D</h3>
+        <h3 style="margin: 0 0 15px 0; color: #4CAF50;">N-Body Gravity Simulation 2D</h3>
 
         <div class="control-group">
             <label for="demoSelect">Demo:</label>
             <select id="demoSelect" style="width: 100%; padding: 6px;">
-                <option value="index.html">Direct O(N²) — Basic</option>
-                <option value="index-fmm.html">FMM Octree — CPU/GPU</option>
-                <option value="index-optimized.html">Grid-Based 2D — CPU</option>
-                <option value="index-optimized-gpu.html">Grid-Based 2D — GPU Compute</option>
-                <option value="index-pm-gpu.html" selected>Particle-Mesh 2D — GPU FFT Poisson</option>
+                <option value="index.html">3D — Direct O(N²) / GPU FMM Octree</option>
+                <option value="index-2d.html" selected>2D — Grid / GPU Grid / GPU Particle-Mesh</option>
             </select>
+        </div>
+
+        <div class="control-group">
+            <label for="algorithm">Algorithm</label>
+            <select id="algorithm"
+                style="width: 100%; padding: 5px; background: #333; color: white; border: 1px solid #666; border-radius: 3px;">
+                <option value="grid-cpu">Grid-Based — CPU</option>
+                <option value="grid-gpu" selected>Grid-Based — GPU Compute</option>
+                <option value="pm-gpu">Particle-Mesh — GPU FFT Poisson</option>
+            </select>
+            <div id="algorithmStatus" class="mode-status">Grid-Based — GPU Compute</div>
         </div>
 
         <div class="control-group">
@@ -53,7 +61,28 @@
 
         <div class="control-group">
             <label>Time Scale: <span id="timeScaleValue">1.00x</span></label>
-            <input type="range" id="timeScale" min="-3" max="3" step="0.1" value="0">
+            <input type="range" id="timeScale" min="-3" max="3" step="0.01" value="0">
+        </div>
+
+        <div class="control-group">
+            <label>Damping: <span id="dampingValue">0.999</span></label>
+            <input type="range" id="damping" min="0.990" max="1.000" step="0.001" value="0.999">
+            <div id="dampingNote" style="display: none; font-size: 11px; color: #999; margin-top: 4px;">
+                Particle-Mesh integration has no velocity damping term; this control has no effect in that mode.
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label>Restitution: <span id="restitutionValue">1.00</span></label>
+            <input type="range" id="restitution" min="0.0" max="1.0" step="0.01" value="1.0">
+        </div>
+
+        <div class="control-group">
+            <label>Initial Orbital Speed: <span id="orbitalSpeedValue">1.00</span></label>
+            <input type="range" id="orbitalSpeed" min="0" max="3" step="0.05" value="1.0">
+            <div style="font-size: 11px; color: #999; margin-top: 4px;">
+                Scales the circular velocity particles start with; always uses a √(.../radius) law so nearer particles orbit faster. Changing this regenerates the disc.
+            </div>
         </div>
 
         <div class="control-group">
@@ -77,14 +106,11 @@
             <div>Compute Encode/Submit (CPU): <span id="computeTime">--</span>ms</div>
             <div>Render Encode/Submit (CPU): <span id="renderTime">--</span>ms</div>
             <div>Active Particles: <span id="activeParticles">--</span></div>
-            <div>Physics Sub-steps This Frame: <span id="substeps">--</span></div>
-            <div>Cloud-in-Cell mass deposit + FFT Poisson solve + gradient sampling all run as GPU compute
-                shaders, at a fixed internal timestep independent of Time Scale; the CPU only encodes/submits
-                commands.</div>
+            <div id="substepsRow" style="display: none;">Physics Sub-steps This Frame: <span id="substeps">--</span></div>
         </div>
     </div>
 
-    <script type="module" src="main-pm-gpu.js"></script>
+    <script type="module" src="./js/app-2d.js"></script>
 
     <script>
         document.getElementById('demoSelect').addEventListener('change', (e) => {

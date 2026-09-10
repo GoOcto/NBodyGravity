@@ -2,7 +2,7 @@
     "name": "webgpu-nbody-simulation",
     "version": "1.0.0",
     "description": "WebGPU N-Body Gravity Simulation - Modern compute shader implementation",
-    "main": "main.js",
+    "main": "index.html",
     "scripts": {
         "dev": "python -m http.server 8080 || python3 -m http.server 8080",
         "dev-node": "npx http-server -p 8080 -c-1",

@@ -1,29 +1,51 @@
+// 3D N-Body gravity simulation with a CPU direct O(N^2) backend and a GPU
+// FMM (fast multipole / Barnes-Hut style octree) backend, switchable at
+// runtime without losing particle state (see setMode). Both backends share
+// the same particle representation, camera-orbit rendering, and control
+// panel — this file is the merge of the former main.js (CPU-only) and
+// main-fmm.js (CPU + GPU) demos.
+//
+// The octree traversal (shaders/fmm-force-compute.wgsl) hardcodes a
+// 4-level tree (LEVEL_OFFSETS, leaf-level check, node-count loop bound),
+// so OCTREE_DEPTH is NOT exposed as a UI setting — changing it would
+// require generalizing that shader's traversal to an arbitrary depth.
+// Opening angle (theta) and softening length ARE exposed: both are plain
+// per-frame uniform params already, so no shader changes are needed.
 import { CameraController } from './camera.js';
 import { mat4, vec3 } from './gl-matrix.js';
+import { initWebGPU } from './common.js';
 
 const WORKGROUP_SIZE = 64;
 const PARTICLE_FLOATS = 8;
 const PARTICLE_BYTES = PARTICLE_FLOATS * 4;
 const BOUNDARY_SIZE = 50;
 const OCTREE_DEPTH = 4;
-const OCTREE_THETA = 0.65;
-const OCTREE_SOFTENING = 0.01;
+export const DEFAULT_OCTREE_THETA = 0.65;
+export const DEFAULT_OCTREE_SOFTENING = 0.01;
+export const OCTREE_THETA_RANGE = { min: 0.1, max: 1.5, step: 0.01 };
+export const OCTREE_SOFTENING_RANGE = { min: 0.001, max: 0.2, step: 0.001 };
+export const PARTICLE_COUNT_RANGE = { min: 100, max: 40000, step: 100 };
+export const DEFAULT_PARTICLE_COUNT = 1000;
 const CPU_DISTANCE_EPSILON = 0.01;
 const OCTREE_LEVEL_OFFSETS = [0, 1, 9, 73, 585];
 const OCTREE_LEAF_COUNT = 1 << (OCTREE_DEPTH * 3);
 const OCTREE_NODE_COUNT = OCTREE_LEVEL_OFFSETS[OCTREE_DEPTH] + OCTREE_LEAF_COUNT;
 
-class SimpleNBodySimulation {
+export class SimpleNBodySimulation {
     constructor(canvas) {
         this.canvas = canvas;
         this.device = null;
         this.context = null;
         this.canvasFormat = null;
 
-        this.particleCount = 500;
+        this.particleCount = DEFAULT_PARTICLE_COUNT;
         this.gravityStrength = 1.0;
         this.timeScale = 1.0;
         this.damping = 0.999;
+        // GPU FMM-only tunables (live uniforms — no shader/resource
+        // rebuild needed when changed, see writeParams).
+        this.octreeTheta = DEFAULT_OCTREE_THETA;
+        this.octreeSoftening = DEFAULT_OCTREE_SOFTENING;
         this.mode = 'cpu';
         this.switchingMode = false;
         this.reconfiguring = false;
@@ -77,16 +99,10 @@ class SimpleNBodySimulation {
     }
 
     async init() {
-        if (!navigator.gpu) {
-            throw new Error('WebGPU is not supported by this browser.');
-        }
-
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) {
-            throw new Error('No WebGPU adapter is available.');
-        }
-
-        this.device = await adapter.requestDevice();
+        const { device, context, canvasFormat } = await initWebGPU(this.canvas);
+        this.device = device;
+        this.context = context;
+        this.canvasFormat = canvasFormat;
         this.device.addEventListener('uncapturederror', (event) => {
             const error = event.error || new Error('Uncaptured WebGPU error.');
             console.error('WebGPU error:', error);
@@ -96,16 +112,6 @@ class SimpleNBodySimulation {
             if (info.reason !== 'destroyed') {
                 console.error(`WebGPU device lost: ${info.message}`);
             }
-        });
-
-        this.context = this.canvas.getContext('webgpu');
-        if (!this.context) {
-            throw new Error('Unable to create a WebGPU canvas context.');
-        }
-        this.canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-        this.context.configure({
-            device: this.device,
-            format: this.canvasFormat,
         });
 
         this.camera.aspect = this.canvas.width / this.canvas.height;
@@ -377,8 +383,8 @@ class SimpleNBodySimulation {
         view.setFloat32(8, deltaTime * this.timeScale, true);
         view.setFloat32(12, this.gravityStrength, true);
         view.setFloat32(16, this.damping, true);
-        view.setFloat32(20, OCTREE_THETA, true);
-        view.setFloat32(24, OCTREE_SOFTENING, true);
+        view.setFloat32(20, this.octreeTheta, true);
+        view.setFloat32(24, this.octreeSoftening, true);
         view.setUint32(28, OCTREE_DEPTH, true);
         this.device.queue.writeBuffer(this.paramBuffer, 0, data);
     }
@@ -597,7 +603,7 @@ class SimpleNBodySimulation {
         this.reconfiguring = true;
         try {
             if (this.mode === 'gpu') await this.syncGpuToCpu();
-            this.particleCount = Math.floor(Math.max(100, Math.min(count, 4000)));
+            this.particleCount = Math.floor(Math.max(PARTICLE_COUNT_RANGE.min, Math.min(count, PARTICLE_COUNT_RANGE.max)));
             this.initializeParticles();
             this.createResources();
             this.createBindGroups();
@@ -609,6 +615,11 @@ class SimpleNBodySimulation {
     setGravityStrength(strength) { this.gravityStrength = strength; }
     setTimeScale(scale) { this.timeScale = scale; }
     setDamping(damping) { this.damping = damping; }
+    // Opening angle (theta) and softening length are plain per-frame
+    // uniform params (see writeParams) — GPU FMM mode only, no effect on
+    // CPU mode, no resource rebuild needed.
+    setOctreeTheta(theta) { this.octreeTheta = theta; }
+    setOctreeSoftening(softening) { this.octreeSoftening = softening; }
 
     resetSimulation() {
         this.initializeParticles();
@@ -616,118 +627,3 @@ class SimpleNBodySimulation {
     }
 }
 
-class App {
-    constructor() {
-        this.simulation = null;
-        this.animationId = null;
-    }
-
-    async init() {
-        const canvas = document.getElementById('canvas');
-        const loading = document.getElementById('loading');
-        const error = document.getElementById('error');
-        const errorMessage = document.getElementById('errorMessage');
-        const controls = document.getElementById('controls');
-
-        try {
-            this.resizeCanvas(canvas);
-            window.addEventListener('resize', () => this.resizeCanvas(canvas));
-            this.simulation = new SimpleNBodySimulation(canvas);
-            await this.simulation.init();
-            loading.style.display = 'none';
-            controls.style.display = 'block';
-            this.setupControls();
-            this.animate();
-        } catch (err) {
-            console.error('Failed to initialize:', err);
-            loading.style.display = 'none';
-            errorMessage.textContent = err instanceof Error ? err.message : String(err);
-            error.style.display = 'block';
-        }
-    }
-
-    resizeCanvas(canvas) {
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = rect.width * devicePixelRatio;
-        canvas.height = rect.height * devicePixelRatio;
-        if (this.simulation) this.simulation.camera.aspect = canvas.width / canvas.height;
-    }
-
-    setupControls() {
-        const modeSelect = document.getElementById('simulationMode');
-        const modeStatus = document.getElementById('modeStatus');
-        const particleCountSlider = document.getElementById('particleCount');
-        const gravitySlider = document.getElementById('gravity');
-        const timeScaleSlider = document.getElementById('timeScale');
-        const dampingSlider = document.getElementById('damping');
-        const resetBtn = document.getElementById('resetBtn');
-
-        const particleCountValue = document.getElementById('particleCountValue');
-        const gravityValue = document.getElementById('gravityValue');
-        const timeScaleValue = document.getElementById('timeScaleValue');
-        const dampingValue = document.getElementById('dampingValue');
-
-        this.simulation.onGpuError = (error) => {
-            modeStatus.textContent = `WebGPU error: ${error.message || error}`;
-            modeStatus.style.color = '#ff6b6b';
-        };
-
-        particleCountSlider.value = this.simulation.particleCount;
-        particleCountValue.textContent = this.simulation.particleCount;
-        modeSelect.value = this.simulation.mode;
-
-        modeSelect.addEventListener('change', async (event) => {
-            const requestedMode = event.target.value;
-            modeStatus.textContent = `Switching to ${requestedMode === 'gpu' ? 'GPU FMM octree' : 'CPU direct (O(N²))'}…`;
-            modeStatus.style.color = '#ffd166';
-            try {
-                await this.simulation.setMode(requestedMode);
-                modeStatus.textContent = requestedMode === 'gpu' ? 'GPU FMM octree' : 'CPU direct (O(N²))';
-                modeStatus.style.color = '#9be7a5';
-            } catch (err) {
-                modeSelect.value = this.simulation.mode;
-                modeStatus.textContent = `Mode switch failed: ${err.message || err}`;
-                modeStatus.style.color = '#ff6b6b';
-            }
-        });
-
-        particleCountSlider.addEventListener('input', (event) => {
-            const value = parseInt(event.target.value, 10);
-            particleCountValue.textContent = value;
-            this.simulation.setParticleCount(value).catch((err) => {
-                modeStatus.textContent = `Particle resize failed: ${err.message || err}`;
-                modeStatus.style.color = '#ff6b6b';
-            });
-        });
-        gravitySlider.addEventListener('input', (event) => {
-            const value = parseFloat(event.target.value);
-            gravityValue.textContent = value.toFixed(1);
-            this.simulation.setGravityStrength(value);
-        });
-        timeScaleSlider.addEventListener('input', (event) => {
-            const value = parseFloat(event.target.value);
-            timeScaleValue.textContent = value.toFixed(1);
-            this.simulation.setTimeScale(value);
-        });
-        dampingSlider.addEventListener('input', (event) => {
-            const value = parseFloat(event.target.value);
-            dampingValue.textContent = value.toFixed(3);
-            this.simulation.setDamping(value);
-        });
-        resetBtn.addEventListener('click', () => this.simulation.resetSimulation());
-    }
-
-    animate() {
-        const time = performance.now();
-        if (this.simulation) {
-            this.simulation.render(time);
-            document.getElementById('fps').textContent = this.simulation.fps;
-            document.getElementById('computeTime').textContent = this.simulation.computeTime.toFixed(3);
-            document.getElementById('renderTime').textContent = this.simulation.renderTime.toFixed(3);
-        }
-        this.animationId = requestAnimationFrame(() => this.animate());
-    }
-}
-
-const app = new App();
-app.init();

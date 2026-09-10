@@ -2,7 +2,7 @@
 // with NO velocity damping (unlike integrate.wgsl's `* sim.damping`).
 // `damping` is still declared in the SimParams struct below purely so its
 // byte layout matches the shared SimParams uniform buffer written once by
-// main-pm-gpu.js and also consumed as-is by reused shaders
+// js/sim-pm-gpu.js and also consumed as-is by reused shaders
 // (mass-resolve.wgsl, accumulate-gradient.wgsl, colorize.wgsl) — it is
 // never read here.
 //
